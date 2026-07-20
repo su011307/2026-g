@@ -8,6 +8,7 @@
 #include "hardware/clocks.h"
 
 #include "driver_st7789.h"
+#include "driver_st7789_rp2350.h"
 #include "transmit.pio.h"
 
 // lcd屏幕的引脚
@@ -35,35 +36,19 @@ constexpr uint DAC_PINS[] = {
     2, 3
 }; // ad9744的数据引脚，最高位为符号位
 
-// ---------------------------------------------------------------------------
-// 正弦查找表 (静态, 离线算好后填入)。
-//   每个 entry 是 32-bit word: out pins, 14 只取低 14 位, 高 18 位由 PIO 自动丢弃。
-//
-// "自然 14 位 DAC 代码" (bit k = AD9744 DBk) 必须按下式重排, 才能匹配这块
-// PCB 上 GPIO2..15 的物理走线 (实质是 14 位值上"每 2 位一组, 组与组之间倒序"):
-//
-//   r |= ((code >> 12) & 0x3u)
-//     | (((code >> 10) & 0x3u) <<  2)
-//     | (((code >>  8) & 0x3u) <<  4)
-//     | (((code >>  6) & 0x3u) <<  6)
-//     | (((code >>  4) & 0x3u) <<  8)
-//     | (((code >>  2) & 0x3u) << 10)
-//     | (((code >>  0) & 0x3u) << 12);
-//
-// 13 位补码编码:
-//   -4096 -> 0x1000,  -1 -> 0x1FFF,  0 -> 0x0000,  +4095 -> 0x0FFF
-// (若 reference.pdf 把 AD9744 MODE 接到 DCOM=straight binary, 则先把
-//  每个 code += 0x2000 偏置半量程, 再走上面的重排公式。)
-// ---------------------------------------------------------------------------
-constexpr uint LUT_SIZE      = 32;
-constexpr uint LUT_RING_BITS = 7; // log2(LUT_SIZE * sizeof(uint32_t)) = log2(128) = 7
-
+constexpr uint LUT_SIZE = 64; // rp2350 dma ring buffer必须为2的幂
+constexpr uint LUT_RING_BITS = 8; // log2(LUT_SIZE * sizeof(uint32_t)) = 8
 // 正弦函数的lut。在线计算来不及，所以打表
-alignas(32) static uint32_t SINUSOIDS[LUT_SIZE] = {
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
-    0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+// 64个样本点，计算脚本在script/compute_lut.py
+alignas(32) static uint32_t SINUSOIDS[1u << LUT_RING_BITS] = {
+    0x0000u, 0x3230u, 0x2F24u, 0x2858u, 0x3F0Cu, 0x153Cu, 0x34D1u, 0x0C45u,
+    0x02A5u, 0x0F89u, 0x39A9u, 0x0B0Du, 0x3C9Du, 0x2DADu, 0x227Du, 0x09FDu,
+    0x3FFDu, 0x09FDu, 0x227Du, 0x2DADu, 0x3C9Du, 0x0B0Du, 0x39A9u, 0x0F89u,
+    0x02A5u, 0x0C45u, 0x34D1u, 0x153Cu, 0x3F0Cu, 0x2858u, 0x2F24u, 0x3230u,
+    0x0000u, 0x1DCFu, 0x20DBu, 0x27A7u, 0x10F3u, 0x3AC3u, 0x1B2Eu, 0x07BAu,
+    0x025Au, 0x0476u, 0x1656u, 0x08F2u, 0x1362u, 0x2252u, 0x2D82u, 0x0A02u,
+    0x1002u, 0x0A02u, 0x2D82u, 0x2252u, 0x1362u, 0x08F2u, 0x1656u, 0x0476u,
+    0x025Au, 0x07BAu, 0x1B2Eu, 0x3AC3u, 0x10F3u, 0x27A7u, 0x20DBu, 0x1DCFu
 };
 
 void transmit_pio_init(
