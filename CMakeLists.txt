@@ -40,8 +40,7 @@ add_executable(wavegen
         lib/st7789/src/driver_st7789.c
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c
         lib/st7789/port/rp2350/driver_st7789_rp2350.c
-        lib/st7789/test/driver_st7789_rp2350_test.c
-        )
+)
 
 pico_set_program_name(wavegen "wavegen")
 pico_set_program_version(wavegen "0.1")
