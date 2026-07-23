@@ -37,6 +37,7 @@ pico_sdk_init()
 
 add_executable(wavegen
         wavegen.cpp
+        # ad9959.cpp
         lib/st7789/src/driver_st7789.c
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c
         lib/st7789/port/rp2350/driver_st7789_rp2350.c

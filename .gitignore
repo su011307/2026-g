@@ -1,4 +1,5 @@
 build/
+bonus*/
 .idea/
 .vscode/
 .cache/

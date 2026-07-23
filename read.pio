@@ -1,0 +1,9 @@
+; this pio program should work at freq lower than 1mhz
+; otherwise it'll be challenging to work all computation out
+; within less than 150 cycles
+.program read
+
+.wrap_target
+    in pins, 12
+    push
+.wrap
