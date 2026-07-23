@@ -1,8 +1,12 @@
 #include <hardware/address_mapped.h>
 #include <hardware/gpio.h>
+#include <hardware/platform_defs.h>
+#include <hardware/regs/addressmap.h>
+#include <hardware/structs/clocks.h>
 #include <hardware/structs/io_bank0.h>
 #include <hardware/uart.h>
 #include <pico/platform/common.h>
+#include <pico/assert.h>
 #include <pico/time.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -16,6 +20,7 @@
 #include "driver_st7789.h"
 #include "driver_st7789_rp2350.h"
 #include "transmit.pio.h"
+#include "read.pio.h"
 
 #include "definition.h"
 
@@ -26,15 +31,15 @@ constexpr uint LUT_SIZE = 64; // rp2350 dma ring buffer必须为2的幂
 constexpr uint LUT_RING_BITS = 8; // log2(LUT_SIZE * sizeof(uint32_t)) = 8
 // 正弦函数的lut。在线计算来不及，所以打表
 // 64个样本点，计算脚本在script/compute_lut.py
-alignas(32) static uint32_t SINUSOIDS[1u << LUT_RING_BITS] = {
-    0x0000, 0x0330, 0x09ab, 0x069f, 0x0c9d, 0x0f8d, 0x210b, 0x2861, 
-    0x29d4, 0x260a, 0x25d2, 0x2cb5, 0x2ec5, 0x2dcd, 0x2f48, 0x2fd6, 
-    0x2ffe, 0x2fc0, 0x2f33, 0x2daa, 0x2e17, 0x2779, 0x26f7, 0x2bfd, 
-    0x2ac8, 0x23a1, 0x2070, 0x0ed1, 0x05f1, 0x0bda, 0x08ca, 0x0264, 
-    0x3d94, 0x3737, 0x3427, 0x3a0d, 0x312d, 0x1fa0, 0x1c5d, 0x153c, 
-    0x1401, 0x190a, 0x1885, 0x11ea, 0x1257, 0x10ce, 0x1080, 0x1003, 
-    0x102b, 0x10bc, 0x1231, 0x1139, 0x1349, 0x1a2f, 0x19f7, 0x1624, 
-    0x179d, 0x1ef6, 0x3071, 0x3361, 0x3962, 0x3656, 0x3ce0, 0x0000
+alignas(256) static uint32_t SINUSOIDS[1u << LUT_RING_BITS] = {
+    0x0000u, 0x3230u, 0x2F24u, 0x2858u, 0x3F0Cu, 0x153Cu, 0x34D1u, 0x0C45u,
+    0x02A5u, 0x0F89u, 0x39A9u, 0x0B0Du, 0x3C9Du, 0x2DADu, 0x227Du, 0x09FDu,
+    0x3FFDu, 0x09FDu, 0x227Du, 0x2DADu, 0x3C9Du, 0x0B0Du, 0x39A9u, 0x0F89u,
+    0x02A5u, 0x0C45u, 0x34D1u, 0x153Cu, 0x3F0Cu, 0x2858u, 0x2F24u, 0x3230u,
+    0x0000u, 0x1DCFu, 0x20DBu, 0x27A7u, 0x10F3u, 0x3AC3u, 0x1B2Eu, 0x07BAu,
+    0x025Au, 0x0476u, 0x1656u, 0x08F2u, 0x1362u, 0x2252u, 0x2D82u, 0x0A02u,
+    0x1002u, 0x0A02u, 0x2D82u, 0x2252u, 0x1362u, 0x08F2u, 0x1656u, 0x0476u,
+    0x025Au, 0x07BAu, 0x1B2Eu, 0x3AC3u, 0x10F3u, 0x27A7u, 0x20DBu, 0x1DCFu
 };
 
 
@@ -55,7 +60,7 @@ void transmit_pio_init(
     sm_config_set_out_shift(&c, true, true, DAC_DATA_COUNT);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);  // 8-deep TX
     pio_sm_init(pio, sm, offset, &c);
-    pio_sm_set_clkdiv(pio, sm, 150.0f); // 配置pio频率
+    pio_sm_set_clkdiv(pio, sm, 1.0f); // 配置pio频率
 
     pio_sm_set_consecutive_pindirs(pio, sm, DAC_CLK_PIN, 1, true);
     pio_sm_set_consecutive_pindirs(pio, sm, pin, DAC_DATA_COUNT, true);
@@ -92,12 +97,34 @@ uint transmit_dma_init(
 void sample_pio_init(
     PIO pio,
     uint sm,
-    uint offset,
-    uint data_base
+    uint offset
 ){
     for (auto i : ADC_DATA_PINS){
         pio_gpio_init(pio, i);
+        gpio_disable_pulls(i);
     }
+    pio_gpio_init(pio, ADC_OTR_PIN);
+    pio_gpio_init(pio, ADC_CLK_PIN);
+    gpio_disable_pulls(ADC_OTR_PIN);
+    gpio_disable_pulls(ADC_CLK_PIN);
+
+    auto cfg = read_program_get_default_config(offset);
+    sm_config_set_in_pins(&cfg, ADC_CAPTURE_BASE);
+    sm_config_set_sideset_pins(&cfg, ADC_CLK_PIN);
+    // 不可right shift
+    sm_config_set_in_shift(&cfg, false, true, ADC_CAPTURE_COUNT);
+    sm_config_set_fifo_join(&cfg, PIO_FIFO_JOIN_RX);
+
+    constexpr float PIO_CYCLES_PER_SAMPLE = 2.0f;
+    const float clkdiv = static_cast<float>(clock_get_hz(clk_sys)) / (ADC_TARGET_SAMPLE_RATE * PIO_CYCLES_PER_SAMPLE);
+    sm_config_set_clkdiv(&cfg, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &cfg);
+    pio_sm_set_consecutive_pindirs(
+        pio, sm, ADC_CAPTURE_BASE, ADC_CAPTURE_COUNT, false
+    );
+    pio_sm_set_consecutive_pindirs(pio, sm, ADC_CLK_PIN, 1, true);
+    pio_sm_set_pins_with_mask64(pio, sm, 0u, 1ull << ADC_CLK_PIN);
 }
 
 int main(){
@@ -123,21 +150,28 @@ int main(){
     gpio_set_dir(DAC_PD_PIN, GPIO_OUT);
     gpio_put(DAC_PD_PIN, 1);
 
-    PIO pio = pio0;
-    uint sm = 0;
-    uint offset = pio_add_program(pio, &transmit_program);
-    transmit_pio_init(pio, sm, offset, DAC_DATA_BASE);
+    PIO dac_pio = pio0;
+    PIO adc_pio = pio1;
+    uint dac_sm = 0;
+    uint adc_sm = 0;
 
-    uint dma_chan = transmit_dma_init(pio, sm, SINUSOIDS, LUT_RING_BITS);
+    pio_set_gpio_base(adc_pio, ADC_PIO_GPIO_BASE);
+    uint dac_offset = pio_add_program(dac_pio, &transmit_program);
+    uint adc_offset = pio_add_program(adc_pio, &read_program);
+
+    transmit_pio_init(dac_pio, dac_sm, dac_offset, DAC_DATA_BASE);
+    sample_pio_init(adc_pio, adc_sm, adc_offset);
+
+    uint dma_chan = transmit_dma_init(dac_pio, dac_sm, SINUSOIDS, LUT_RING_BITS);
     dma_channel_start(dma_chan);
 
-    pio_sm_put(pio, sm, 0x3fff);
-    while (pio_sm_get_tx_fifo_level(pio, sm) == 0) {
+    pio_sm_put(dac_pio, dac_sm, 0x3fff);
+    while (pio_sm_get_tx_fifo_level(dac_pio, dac_sm) == 0) {
         tight_loop_contents();
     } // 避免pio_sm_exec stall
-    pio_sm_exec(pio, sm, pio_encode_pull(false, true)); // pull完之后dma会自动开始工作
+    pio_sm_exec(dac_pio, dac_sm, pio_encode_pull(false, true)); // pull完之后dma会自动开始工作
 
-    pio_sm_set_enabled(pio, sm, true);
+    pio_sm_set_enabled(dac_pio, dac_sm, true);
 
     // ad9744终止休眠
     gpio_put(DAC_PD_PIN, 0);

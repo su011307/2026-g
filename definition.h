@@ -17,6 +17,8 @@ constexpr uint UART_RX_PIN = 45;
 constexpr uint UART_TX_PIN = 44;
 
 // ad9744的控制引脚
+constexpr float DAC_TARGET_SAMPLE_RATE = 1e6;
+
 constexpr uint DAC_CLK_PIN    = 0;
 constexpr uint DAC_PD_PIN     = 1; // sleep pin，高电平有效
 constexpr uint DAC_DATA_BASE  = 2;
@@ -30,10 +32,57 @@ constexpr uint DAC_DATA_PINS[] = {
 }; // ad9744的数据引脚，最高位为符号位
 
 // ad9226的控制引脚
+constexpr float ADC_TARGET_SAMPLE_RATE = 1e6;
+
+constexpr uint ADC_PIO_GPIO_BASE = 16;
+constexpr uint ADC_CAPTURE_BASE = 26;
+constexpr uint ADC_CAPTURE_COUNT = 14;
+constexpr uint ADC_DATA_COUNT = 12;
 constexpr uint ADC_CLK_PIN = 28;
 constexpr uint ADC_OTR_PIN = 39;
+constexpr uint ADC_PIPELINE_DELAY = 7;
+
+// LSB -> MSB. reference.pdf中的走线并不是连续的逻辑位序。
 constexpr uint ADC_DATA_PINS[] = {
     38, 37, 36, 35,
     34, 33, 26, 27,
     32, 31, 30, 29
 };
+
+// read.pio从GPIO26开始一次读取14位：
+// raw[13:0] = {OTR,D0,D1,D2,D3,D4,D5,D8,D9,D10,D11,CLK,D7,D6}
+constexpr uint16_t reverse_low_bits(uint16_t value, uint count) {
+    uint16_t result = 0;
+    for (uint i = 0; i < count; ++i) {
+        result = static_cast<uint16_t>((result << 1) | ((value >> i) & 1u));
+    }
+    return result;
+}
+
+constexpr uint16_t adc_unpack_code(uint16_t raw) {
+    const uint16_t d7_d6 = static_cast<uint16_t>((raw & 0x0003u) << 6);
+    const uint16_t d11_d8 =
+        static_cast<uint16_t>(reverse_low_bits((raw >> 3) & 0x000fu, 4) << 8);
+    const uint16_t d5_d0 =
+        reverse_low_bits(static_cast<uint16_t>((raw >> 7) & 0x003fu), 6);
+    return static_cast<uint16_t>(d11_d8 | d7_d6 | d5_d0);
+}
+
+constexpr bool adc_unpack_otr(uint16_t raw) {
+    return ((raw >> 13) & 1u) != 0;
+}
+
+static_assert(adc_unpack_code(1u << 0) == (1u << 6));   // GPIO26 -> D6
+static_assert(adc_unpack_code(1u << 1) == (1u << 7));   // GPIO27 -> D7
+static_assert(adc_unpack_code(1u << 3) == (1u << 11));  // GPIO29 -> D11
+static_assert(adc_unpack_code(1u << 4) == (1u << 10));  // GPIO30 -> D10
+static_assert(adc_unpack_code(1u << 5) == (1u << 9));   // GPIO31 -> D9
+static_assert(adc_unpack_code(1u << 6) == (1u << 8));   // GPIO32 -> D8
+static_assert(adc_unpack_code(1u << 7) == (1u << 5));   // GPIO33 -> D5
+static_assert(adc_unpack_code(1u << 8) == (1u << 4));   // GPIO34 -> D4
+static_assert(adc_unpack_code(1u << 9) == (1u << 3));   // GPIO35 -> D3
+static_assert(adc_unpack_code(1u << 10) == (1u << 2));  // GPIO36 -> D2
+static_assert(adc_unpack_code(1u << 11) == (1u << 1));  // GPIO37 -> D1
+static_assert(adc_unpack_code(1u << 12) == (1u << 0));  // GPIO38 -> D0
+static_assert(adc_unpack_code(1u << 2) == 0);           // GPIO28 is CLK
+static_assert(adc_unpack_otr(1u << 13));                // GPIO39 is OTR
