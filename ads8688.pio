@@ -1,0 +1,12 @@
+.program ads8688_cs
+
+; Run this program at 200 kHz. The three instructions take 40 PIO cycles,
+; producing one CS falling edge every 200 us (5 kSPS).
+;
+; CS stays low for 9 cycles (45 us). IRQ 0 is raised 5 us after the falling
+; edge, leaving 40 us for the CPU to complete the 32-bit SPI transaction.
+.wrap_target
+    set pins, 0
+    irq set 0 [7]
+    set pins, 1 [30]
+.wrap

@@ -17,7 +17,7 @@ constexpr uint UART_RX_PIN = 45;
 constexpr uint UART_TX_PIN = 44;
 
 // ad9744的控制引脚
-constexpr float DAC_TARGET_SAMPLE_RATE = 1e6;
+constexpr float DAC_TARGET_SAMPLE_RATE = 3e5;
 
 constexpr uint DAC_CLK_PIN    = 0;
 constexpr uint DAC_PD_PIN     = 1; // sleep pin，高电平有效
@@ -29,10 +29,10 @@ constexpr uint DAC_DATA_PINS[] = {
     10, 11, 8, 9,
     6, 7, 4, 5,
     2, 3
-}; // ad9744的数据引脚，最高位为符号位
+}; // LSB -> MSB；DAC模块接口使用14位二补码，最高位是符号位
 
 // ad9226的控制引脚
-constexpr float ADC_TARGET_SAMPLE_RATE = 1e6;
+constexpr float ADC_TARGET_SAMPLE_RATE = 3e5;
 
 constexpr uint ADC_PIO_GPIO_BASE = 16;
 constexpr uint ADC_CAPTURE_BASE = 26;
@@ -42,7 +42,7 @@ constexpr uint ADC_CLK_PIN = 28;
 constexpr uint ADC_OTR_PIN = 39;
 constexpr uint ADC_PIPELINE_DELAY = 7;
 
-// LSB -> MSB. reference.pdf中的走线并不是连续的逻辑位序。
+// LSB -> MSB. reference.pdf中的走线并不是连续的逻辑位序
 constexpr uint ADC_DATA_PINS[] = {
     38, 37, 36, 35,
     34, 33, 26, 27,

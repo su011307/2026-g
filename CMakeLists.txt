@@ -41,8 +41,10 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(wavegen
-        wavegen.cpp
+        # wavegen.cpp
+        adc.cpp
         # ad9959.cpp
+        # ads8688.cpp
         lib/st7789/src/driver_st7789.c
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c
         lib/st7789/port/rp2350/driver_st7789_rp2350.c
@@ -54,6 +56,7 @@ pico_set_program_version(wavegen "0.1")
 # Generate PIO header
 pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/transmit.pio)
 pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/read.pio)
+pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/ads8688.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(wavegen 0)
