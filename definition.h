@@ -32,7 +32,7 @@ constexpr uint DAC_DATA_PINS[] = {
 }; // LSB -> MSB；DAC模块接口使用14位二补码，最高位是符号位
 
 // ad9226的控制引脚
-constexpr float ADC_TARGET_SAMPLE_RATE = 3e5;
+constexpr float ADC_TARGET_SAMPLE_RATE = 6.5e7;
 
 constexpr uint ADC_PIO_GPIO_BASE = 16;
 constexpr uint ADC_CAPTURE_BASE = 26;

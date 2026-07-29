@@ -1,6 +1,6 @@
 # Generated Cmake Pico project file
 
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.18)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -38,11 +38,25 @@ project(wavegen C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# Add CMSIS-DSP. CMSISCORE points the library at the CMSIS-Core headers
+# supplied by the Pico SDK.
+include(FetchContent)
+set(CMSISCORE ${PICO_SDK_PATH}/src/rp2_common/cmsis/stub/CMSIS/Core)
+set(DISABLEFLOAT16 ON CACHE BOOL "Disable CMSIS-DSP float16 kernels" FORCE)
+FetchContent_Declare(cmsis_dsp
+        GIT_REPOSITORY https://github.com/ARM-software/CMSIS-DSP.git
+        GIT_TAG v1.17.0
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR Source
+)
+FetchContent_MakeAvailable(cmsis_dsp)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(wavegen
+        main.cpp
         # wavegen.cpp
-        adc.cpp
+        # adc.cpp
         # ad9959.cpp
         # ads8688.cpp
         lib/st7789/src/driver_st7789.c
@@ -65,6 +79,8 @@ pico_enable_stdio_usb(wavegen 0)
 # Add the standard library to the build
 target_link_libraries(wavegen
         pico_stdlib
+        cmsis_core
+        CMSISDSP
 )
 
 # Add the standard include files to the build
