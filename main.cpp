@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -7,15 +9,29 @@
 #include <hardware/pio.h>
 #include <hardware/uart.h>
 #include <pico/stdlib.h>
+#include <pico/time.h>
+
+#include <arm_math.h>
 
 #include "definition.h"
 #include "read.pio.h"
+
+constexpr uint32_t BUFFER_SIZE = 65536;
+constexpr uint8_t MEDIAN_WINDOW_SIZE = 5;
 
 const auto uart_port = uart0;
 
 PIO const adc_pio = pio0;
 constexpr uint adc_sm = 0;
+
 constexpr float VOLT_CONVERT = 0.002441406;
+constexpr float ZERO_DRIFT_COMPENSATE = -40;
+
+typedef struct {
+    float top_freq[3];
+    float v_pp;
+    float v_rms;
+} SignalDescription;
 
 // 提取出原始 12b ADC 数据。其中 OTR、CLK 被 discard
 static __force_inline uint16_t unpack_adc_code(uint16_t raw) {
@@ -31,7 +47,7 @@ static __force_inline uint16_t unpack_adc_code(uint16_t raw) {
     return static_cast<uint16_t>(d11_d6 | d5_d4 | d3_d0);
 }
 float compute_adc_voltage(int32_t raw) {
-    return (5.0f - VOLT_CONVERT * raw) * 1000; // metric: mV
+    return (5.0f - VOLT_CONVERT * raw) * 1000 + ZERO_DRIFT_COMPENSATE; // metric: mV
 }
 
 float sample_clock_divider() {
@@ -141,8 +157,21 @@ uint8_t encode_float_to_string(float data, uint8_t *str) {
     return index;
 }
 
-static uint16_t ARENA[32768] = {};
-constexpr size_t ARENA_SAMPLE_COUNT = sizeof(ARENA) / sizeof(ARENA[0]);
+void unpack_adc_buffer(uint16_t *buffer) {
+    for (uint32_t i = 0; i < BUFFER_SIZE; i++) {
+        buffer[i] = unpack_adc_code(buffer[i]);
+    }
+}
+
+void analyze_signal(uint16_t *buffer) {
+    float voltage[BUFFER_SIZE] = {};
+    for (uint32_t i = 0; i < BUFFER_SIZE; i++) {
+        voltage[i] = compute_adc_voltage(static_cast<int32_t>(buffer[i]));
+    }
+}
+
+static uint16_t RAW_BUFFER[BUFFER_SIZE] = {};
+constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0]);
 
 int main() {
     stdio_init_all();
@@ -162,10 +191,11 @@ int main() {
     // uart_puts(uart_port, "p2");
 
     pio_init(adc_pio, adc_sm, adc_offset);
-    const uint dma_chan =
-        dma_init(adc_pio, adc_sm, ARENA, ARENA_SAMPLE_COUNT);
+    const uint dma_chan = dma_init(adc_pio, adc_sm, RAW_BUFFER, ARENA_SAMPLE_COUNT);
 
     // uart_puts(uart_port, "p1");
+
+    sleep_ms(1);
 
     dma_channel_start(dma_chan);
     pio_sm_set_enabled(adc_pio, adc_sm, true);
@@ -179,7 +209,7 @@ int main() {
 
     for (size_t i = 0; i < ARENA_SAMPLE_COUNT; ++i) {
         const int32_t adc_raw =
-            static_cast<int32_t>(unpack_adc_code(ARENA[i]));
+            static_cast<int32_t>(unpack_adc_code(RAW_BUFFER[i]));
         const float voltage_mv = compute_adc_voltage(adc_raw);
 
         uint8_t uart_buf[12] = {};
