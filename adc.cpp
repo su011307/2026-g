@@ -23,6 +23,8 @@ PIO const DAC_PIO = pio0;
 constexpr uint ADC_SM = 0;
 constexpr uint DAC_SM = 0;
 
+constexpr float VOLT_CONVERT = 0.002441406;
+
 bool dac_started = false;
 volatile uint32_t processed_samples = 0;
 volatile uint32_t adc_overrange_samples = 0;
@@ -154,10 +156,9 @@ static __force_inline uint16_t normalized_to_dac_code(float value) {
 
 void __isr __not_in_flash_func(adc_pio_irq_handler)() {
     while (!pio_sm_is_rx_fifo_empty(ADC_PIO, ADC_SM)) {
-        // const uint16_t raw =
-        //     static_cast<uint16_t>(pio_sm_get(ADC_PIO, ADC_SM) & 0x3fffu);
+        const uint16_t raw =
+            static_cast<uint16_t>(pio_sm_get(ADC_PIO, ADC_SM) & 0x3fffu);
 
-        const uint16_t raw = 16u;
         if (raw & (1u << 13)) {
             ++adc_overrange_samples;
         }
@@ -165,10 +166,10 @@ void __isr __not_in_flash_func(adc_pio_irq_handler)() {
         uint8_t uart_frame[9] = {};
 
         const int32_t signed_code =
-            static_cast<int32_t>(unpack_adc_code(raw)) - 2048;
-        const float input = static_cast<float>(signed_code) / 2048.0f;
+            static_cast<int32_t>(unpack_adc_code(raw));
+        // const float input = static_cast<float>(signed_code) / 2048.0f;
         // const float output = run_transfer_function(input);
-        const float output = input;
+        const float output = (5.0 - signed_code * VOLT_CONVERT) * 1000;
 
         const uint frame_size = encode_uart_frame(output, uart_frame);
         uart_write_blocking(UART_PORT, uart_frame, frame_size);
