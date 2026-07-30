@@ -5,12 +5,15 @@ class Screen final {
 public:
     Screen() = default;
     void send_graph(const float data[], uint16_t length);
+    void send_graph1(const float data[], uint16_t length);
     void send_text(const char *text);
     void send_graph_with_step(const float data[], uint16_t length, uint16_t step);
 
 private:
     float stretch_ = 2.0f;
-    uint16_t offset_ = 250;
+    float stretch1_ = 2.0f;
+    uint16_t offset_ = 128;
+    uint16_t offset1_ = 110;
 };
 
 /*
