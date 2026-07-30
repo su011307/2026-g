@@ -579,7 +579,7 @@ bool find_wave(
     return true;
 }
 
-void resample_spectrum(float spectrum_scale, SignalPlot &plot) {
+void resample_spectrum(SignalPlot &plot) {
     clear_plot(plot, static_cast<uint16_t>(SPECTRUM_SIZE));
 
     const float bin_width_hz =
@@ -601,10 +601,9 @@ void resample_spectrum(float spectrum_scale, SignalPlot &plot) {
 
         // Taking the larger adjacent bin preserves a narrow spectral peak
         // while mapping the 0--500 kHz positive spectrum to the display.
-        const float left_magnitude =
-            SPECTRUM_SUM[left] * spectrum_scale;
-        const float right_magnitude =
-            SPECTRUM_SUM[right] * spectrum_scale;
+        // The normalization below removes any common accumulation scale.
+        const float left_magnitude = SPECTRUM_SUM[left];
+        const float right_magnitude = SPECTRUM_SUM[right];
         const float magnitude =
             left_magnitude > right_magnitude
                 ? left_magnitude

@@ -23,4 +23,4 @@ void analyze_accumulated_spectrum(
     SignalDescription &result
 );
 bool find_wave(const SignalDescription &signal, bool one_wave, SignalPlot &plot);
-void resample_spectrum(float spectrum_scale, SignalPlot &plot);
+void resample_spectrum(SignalPlot &plot);

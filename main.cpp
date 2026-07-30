@@ -1,4 +1,3 @@
-#include <arm_math.h>
 #include <cstdint>
 #include <cstdio>
 #include <hardware/gpio.h>
@@ -39,18 +38,16 @@ constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0])
 
 enum class WorkMode : uint8_t {
     ShowOneCycle,
-    ShowThreeCycle,
-    ShowSpectrum,
-    ShowDescription
+    ShowThreeCycle
 };
 
 static Screen sc;
 constexpr uint8_t WORK_QUEUE_SIZE = 16;
 constexpr uint8_t WORK_QUEUE_MASK = WORK_QUEUE_SIZE - 1;
-constexpr uint8_t WORK_MODE_COUNT = 4;
+constexpr uint8_t WORK_MODE_COUNT = 2;
 static_assert((WORK_QUEUE_SIZE & WORK_QUEUE_MASK) == 0);
 static_assert(
-    static_cast<uint8_t>(WorkMode::ShowDescription) + 1 ==
+    static_cast<uint8_t>(WorkMode::ShowThreeCycle) + 1 ==
     WORK_MODE_COUNT
 );
 
@@ -59,12 +56,11 @@ static volatile uint8_t WORK_QUEUE_HEAD = 0;
 static volatile uint8_t WORK_QUEUE_TAIL = 0;
 static SignalPlot SCREEN_PLOT = {};
 
-static volatile bool acquisition_in_progress = false;
-static volatile bool data_available = false;   // 是否有有效的采集结果
+// Retained because main()'s guarded initialization still references it.
+static volatile bool data_available = false;
 
 static uint dma_chan;
 static uint adc_offset;
-static SignalDescription signal_sum = {};
 
 void __isr __not_in_flash_func(screen_irq_handler)();
 
@@ -104,7 +100,7 @@ void init_peripheral(
 void __isr __not_in_flash_func(screen_irq_handler)() {
     static uint8_t receive_state = 0;
     static uint8_t command = 0;
-    static WorkMode selected_mode = WorkMode::ShowDescription;
+    static WorkMode selected_mode = WorkMode::ShowOneCycle;
 
     while (uart_is_readable(screen_uart)) {
         const uint8_t byte = static_cast<uint8_t>(
@@ -116,8 +112,7 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                     byte == 0x2b ||
                     byte == 0x2d ||
                     byte == 0x31 ||
-                    byte == 0x33 ||
-                    byte == 0x76
+                    byte == 0x33
                 ) {
                     command = byte;
                     receive_state = 1;
@@ -158,9 +153,6 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                     case 0x33:
                         selected_mode = WorkMode::ShowThreeCycle;
                         break;
-                    case 0x76:
-                        selected_mode = WorkMode::ShowSpectrum;
-                        break;
                     default:
                         break;
                 }
@@ -181,15 +173,16 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
     }
 }
 
-void perform_acquisition();
+static SignalDescription perform_acquisition();
 // 发送信号参数信息（Vpp, 频率/幅度列表）
-static inline void send_signal_info(const SignalDescription &signal, float repeat_scale) {
+static inline void send_signal_info(const SignalDescription &signal) {
     char buffer[256];
     int pos = 0;
+    constexpr float repeat_scale = 1.0f;
 
     // 第一行：Vpp（mV）
     pos += snprintf(buffer + pos, sizeof(buffer) - pos, "Vpp= %.2f mV\r\n",
-                    signal.v_pp * repeat_scale);
+                    signal.v_pp * repeat_scale); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
 
     // 最多输出 3 个频率分量（基波 + 谐波），实际数量由 component_count 决定
     uint32_t count = signal.component_count;
@@ -198,56 +191,31 @@ static inline void send_signal_info(const SignalDescription &signal, float repea
         // 频率单位转换为 kHz，幅度为 mV
         pos += snprintf(buffer + pos, sizeof(buffer) - pos, "%.3f kHz %.2f mV\r\n",
                         signal.component_frequency[i] / 1000.0f,
-                        signal.component_amplitude[i]);
+                        signal.component_amplitude[i]); // 同上！**不要修改！**
         if (pos >= (int)sizeof(buffer) - 1) break;
     }
 
+    // FIXME: 这部分实际上并没有在工作。但是优先级较低
     buffer[sizeof(buffer) - 1] = '\0';
     sc.send_text("loading...");
     sc.send_text(buffer);
 }
-inline void Show_FFT_plot(){
-    SignalPlot pFFT;
-    resample_spectrum(2.0,pFFT);
-    sc.send_graph1(pFFT.samples, pFFT.sample_count);
-}
-static void handle_show_one_cycle() {
-    if (acquisition_in_progress) return;   // 正在采集中，忽略本次按钮
-    perform_acquisition();                 // 阻塞采集，完成后 data_available = true
-    if (find_wave(signal_sum, true, SCREEN_PLOT)) {
-        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-        sc.send_text("loading");
-        send_signal_info(signal_sum, 1.0f / REPEAT_TIME);
-        Show_FFT_plot();
-    } else {
-        sc.send_text("No fundamental");
-    }
+
+static void send_spectrum_plot() {
+    resample_spectrum(SCREEN_PLOT);
+    sc.send_graph1(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
 }
 
-static void handle_show_three_cycles() {
-    if (acquisition_in_progress) return;
-    perform_acquisition();
-    if (find_wave(signal_sum, false, SCREEN_PLOT)) {
-        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-        sc.send_text("loading");
-        send_signal_info(signal_sum, 1.0f / REPEAT_TIME);
-        Show_FFT_plot();
-    } else {
+static void handle_show_cycles(bool one_cycle) {
+    const SignalDescription signal = perform_acquisition();
+    if (!find_wave(signal, one_cycle, SCREEN_PLOT)) {
         sc.send_text("No fundamental");
+        return;
     }
-}
 
-static void handle_show_spectrum() {
-    if (!data_available && !acquisition_in_progress) {
-        perform_acquisition();
-    }
-    if (data_available) {
-        // 注意：原有函数需要 spectrum_scale，这里用全局常量 repeat_scale
-        resample_spectrum(1.0f / REPEAT_TIME, SCREEN_PLOT);
-        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-    } else {
-        sc.send_text("No data");
-    }
+    sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+    send_signal_info(signal);
+    send_spectrum_plot();
 }
 
 static bool try_pop_work_mode(WorkMode &mode) {
@@ -260,101 +228,8 @@ static bool try_pop_work_mode(WorkMode &mode) {
     return true;
 }
 
-static uint8_t append_text(
-    char *output,
-    uint8_t index,
-    const char *text
-) {
-    while (*text != '\0') {
-        output[index++] = *text++;
-    }
-    return index;
-}
-
-static uint8_t append_float(
-    char *output,
-    uint8_t index,
-    float value
-) {
-    return index + encode_float_to_string(
-        value,
-        reinterpret_cast<uint8_t *>(output + index)
-    );
-}
-
-static void handle_show_one_cycle(
-    const SignalDescription &signal
-) {
-    if (find_wave(signal, true, SCREEN_PLOT)) {
-        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-    } else {
-        constexpr char message[] = "No fundamental";
-        sc.send_text(message);
-    }
-}
-
-static void handle_show_three_cycles(
-    const SignalDescription &signal
-) {
-    if (find_wave(signal, false, SCREEN_PLOT)) {
-        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-    } else {
-        constexpr char message[] = "No fundamental";
-        sc.send_text(message);
-    }
-}
-
-static void handle_show_spectrum(float spectrum_scale) {
-    resample_spectrum(spectrum_scale, SCREEN_PLOT);
-    sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-}
-
-
-static void handle_show_description(
-    const SignalDescription &signal,
-    float repeat_scale
-) {
-    char description[80] = {};
-    uint8_t length = append_text(description, 0, "F:");
-    if (signal.component_count == 0) {
-        length = append_text(description, length, "--");
-    } else {
-        length = append_float(
-            description,
-            length,
-            signal.component_frequency[0]
-        );
-    }
-    length = append_text(description, length, " Vpp:");
-    length = append_float(
-        description,
-        length,
-        signal.v_pp * repeat_scale
-    );
-    length = append_text(description, length, " Vrms:");
-    length = append_float(
-        description,
-        length,
-        signal.v_rms * repeat_scale
-    );
-    description[length] = '\0';
-    sc.send_text(description);
-}
-
-
-static void handle_show_description() {
-    if (!data_available && !acquisition_in_progress) {
-        perform_acquisition();
-    }
-    if (data_available) {
-        // 直接使用已有的 signal_sum 和 repeat_scale
-        handle_show_description(signal_sum, 1.0f / REPEAT_TIME);
-    } else {
-        sc.send_text("No data");
-    }
-}
-
 int main() {
+    // GUARD: 除了 switch 语句，不要修改 main 函数的任何其他部分
     init_peripheral(oled_spi, screen_uart, serial_uart);
     sleep_ms(100);
     const char greet[] = "Signal Anlalyser Set Up!\r\nWaiting For Data\r\n2026 G Solution";
@@ -389,31 +264,20 @@ int main() {
 
         switch (request) {
             case WorkMode::ShowOneCycle:
-                handle_show_one_cycle();
+                handle_show_cycles(true);
                 break;
             case WorkMode::ShowThreeCycle:
-                handle_show_three_cycles();
-                break;
-            case WorkMode::ShowSpectrum:
-                handle_show_spectrum();
-                break;
-            case WorkMode::ShowDescription:
-                handle_show_description();
+                handle_show_cycles(false);
                 break;
         }
     }
 }
 
-void perform_acquisition() {
-    // 防止重入
-    if (acquisition_in_progress) return;
-    acquisition_in_progress = true;
-
+static SignalDescription perform_acquisition() {
     // 清空累积频谱
     reset_signal_analysis();
 
     SignalDescription acc = {};
-    // SignalDescription sample[3] = {};
     for (uint32_t repeat = 0; repeat < REPEAT_TIME; ++repeat) {
         // ----- 启动 DMA 采样 -----
         pio_sm_clear_fifos(adc_pio, adc_sm);
@@ -426,39 +290,17 @@ void perform_acquisition() {
 
         // ----- 数据解包与信号分析 -----
         unpack_adc_buffer(RAW_BUFFER);
-        SignalDescription current = analyze_signal(RAW_BUFFER); // 内部填充 MEDIAN_BUFFER 并累加 SPECTRUM_SUM
-        sample[repeat] = current;
+        const SignalDescription current = analyze_signal(RAW_BUFFER); // 内部填充 MEDIAN_BUFFER 并累加 SPECTRUM_SUM
         acc.v_pp += current.v_pp;
         acc.v_rms += current.v_rms;
     }
 
     // ----- 累积频谱分析 -----
-    const float repeat_scale = 1.0f / static_cast<float>(REPEAT_TIME);
+    constexpr float repeat_scale =
+        1.0f / static_cast<float>(REPEAT_TIME);
 
-    // auto [a, b, c] = sample;
-    // if (a.v_pp > b.v_pp) {
-    //     auto tmp = a;
-    //     a = b;
-    //     b = tmp;
-    // }
-
-    // if (b.v_pp > c.v_pp) {
-    //     auto tmp = b;
-    //     b = c;
-    //     c = b;
-    // }
-
-    // if (a.v_pp > b.v_pp) {
-    //     auto tmp = a;
-    //     a = b;
-    //     b = tmp;
-    // }
-
+    acc.v_pp *= repeat_scale;
+    acc.v_rms *= repeat_scale;
     analyze_accumulated_spectrum(repeat_scale, acc);
-    // analyze_accumulated_spectrum(repeat_scale, b);
-    signal_sum = acc;          // 更新全局结果
-    // signal_sum = b;
-    data_available = true;     // 标记数据有效
-
-    acquisition_in_progress = false;
+    return acc;
 }
