@@ -62,6 +62,7 @@ add_executable(wavegen
         # ${CMAKE_CURRENT_LIST_DIR}/app/get_raw_adc9226.cpp
 
         src/initialize.cpp
+        src/signal.cpp
         src/utility.cpp
 
         lib/tset2/src/display.cpp

@@ -1,4 +1,5 @@
 #include "utility.hpp"
+#include <hardware/uart.h>
 
 // 提取出原始 12b ADC 数据。其中 OTR、CLK 被 discard
 static uint16_t unpack_adc_code(uint16_t raw) {
@@ -59,7 +60,7 @@ uint8_t encode_float_to_string(float data, uint8_t *str) {
 }
 
 void unpack_adc_buffer(uint16_t *buffer) {
-    for (uint32_t i = 0; i < adc::BUFFER_SIZE; i++) {
+    for (uint32_t i = 0; i < sig::BUFFER_SIZE; i++) {
         buffer[i] = unpack_adc_code(buffer[i]);
     }
 }
@@ -68,10 +69,16 @@ uint32_t reflected_sample_index(int32_t index) {
     if (index < 0) {
         return static_cast<uint32_t>(-index - 1);
     }
-    if (index >= static_cast<int32_t>(adc::BUFFER_SIZE)) {
+    if (index >= static_cast<int32_t>(sig::BUFFER_SIZE)) {
         return static_cast<uint32_t>(
-            2 * static_cast<int32_t>(adc::BUFFER_SIZE) - index - 1
+            2 * static_cast<int32_t>(sig::BUFFER_SIZE) - index - 1
         );
     }
     return static_cast<uint32_t>(index);
+}
+
+void uart_write_float(uart_inst_t *const uart_port, float value) {
+    uint8_t uart_buf[16] = {};
+    const uint8_t size = encode_float_to_string(value, uart_buf);
+    uart_write_blocking(uart_port, uart_buf, size);
 }
