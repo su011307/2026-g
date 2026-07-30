@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <pico/types.h>
 
 // lcd的引脚
@@ -71,6 +72,12 @@ constexpr uint16_t adc_unpack_code(uint16_t raw) {
 constexpr bool adc_unpack_otr(uint16_t raw) {
     return ((raw >> 13) & 1u) != 0;
 }
+
+namespace screen {
+    constexpr uint DISP_UART_TX_PIN = 8;
+    constexpr uint DISP_UART_RX_PIN = 9;
+    constexpr uint DISP_UART_BAUDRATE = 115200;
+};
 
 static_assert(adc_unpack_code(1u << 0) == (1u << 6));   // GPIO26 -> D6
 static_assert(adc_unpack_code(1u << 1) == (1u << 7));   // GPIO27 -> D7

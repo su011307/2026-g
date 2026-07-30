@@ -13,13 +13,14 @@
 #include <arm_math.h>
 
 #include "definition.h"
+#include "init.h"
 #include "read.pio.h"
 
 constexpr uint32_t BUFFER_SIZE = 65536;
 // Centered median filter: radius 6 gives a 13-sample window.
 constexpr uint32_t MEDIAN_RADIUS = 7;
 constexpr uint32_t MEDIAN_WINDOW = 2 * MEDIAN_RADIUS + 1;
-constexpr uint32_t REPEAT_TIME = 1;
+constexpr uint32_t REPEAT_TIME = 3;
 constexpr uint32_t FFT_SIZE = 4096;
 constexpr uint32_t FIR_ORDER = 64;
 constexpr uint32_t NUM_TAPS = FIR_ORDER + 1;
@@ -750,7 +751,7 @@ int main() {
     //     uart_write_float(SPECTRUM_SUM[bin] * repeat_scale);
     // }
 
-    uart_puts(uart_port, "COMPONENT_COUNT,");
+    uart_puts(uart_port, "Spectrum Peak Count: ");
     const uint8_t component_count_character = static_cast<uint8_t>(
         '0' + signal_sum.component_count
     );
@@ -760,23 +761,23 @@ int main() {
         1
     );
 
-    uart_puts(uart_port, "\r\nPEAKS_HZ,");
+    uart_puts(uart_port, "\r\nPeak(s) Hz: ");
     for (uint32_t i = 0; i < signal_sum.component_count; ++i) {
         if (i != 0) {
             uart_write_blocking(uart_port, &separator, 1);
         }
         uart_write_float(signal_sum.component_frequency[i]);
     }
-    uart_puts(uart_port, "\r\nAMPLITUDES_MV,");
+    uart_puts(uart_port, "\r\nAmplitude(mV): ");
     for (uint32_t i = 0; i < signal_sum.component_count; ++i) {
         if (i != 0) {
             uart_write_blocking(uart_port, &separator, 1);
         }
         uart_write_float(signal_sum.component_amplitude[i]);
     }
-    uart_puts(uart_port, "\r\nVPP_MV,");
+    uart_puts(uart_port, "\r\nVpp(mV): ");
     uart_write_float(signal_sum.v_pp * repeat_scale);
-    uart_puts(uart_port, "\r\nVRMS_MV,");
+    uart_puts(uart_port, "\r\nVrms(mV): ");
     uart_write_float(signal_sum.v_rms * repeat_scale);
     uart_puts(uart_port, "\r\n");
     uart_tx_wait_blocking(uart_port);

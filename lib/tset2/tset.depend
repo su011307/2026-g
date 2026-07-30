@@ -1,0 +1,17 @@
+# depslib dependency file v1.0
+1785372667 source:c:\users\zgx\desktop\wddm\tset\main.cpp
+	<windows.h>
+	<iostream>
+	<cstdio>
+	<io.h>
+	<fcntl.h>
+	"DISPLAY_FOR_G.h"
+
+1785373418 c:\users\zgx\desktop\wddm\tset\include\display_for_g.h
+	<stdint.h>
+	<stdio.h>
+	<windows.h>
+
+1785372667 source:c:\users\zgx\desktop\wddm\tset\src\display_for_g.cpp
+	"DISPLAY_FOR_G.h"
+

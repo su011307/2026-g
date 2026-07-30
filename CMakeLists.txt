@@ -55,10 +55,12 @@ FetchContent_MakeAvailable(cmsis_dsp)
 
 add_executable(wavegen
         main.cpp
-        # wavegen.cpp
-        # adc.cpp
-        # ad9959.cpp
-        # ads8688.cpp
+        # ${CMAKE_CURRENT_LIST_DIR}/app/wavegen.cpp
+        # ${CMAKE_CURRENT_LIST_DIR}/app/adc9226.cpp
+        # ${CMAKE_CURRENT_LIST_DIR}/app/ad9959.cpp
+        # ${CMAKE_CURRENT_LIST_DIR}/app/ads8688.cpp
+        # ${CMAKE_CURRENT_LIST_DIR}/app/get_raw_adc9226.cpp
+        lib/tset2/src/display.cpp
         lib/st7789/src/driver_st7789.c
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c
         lib/st7789/port/rp2350/driver_st7789_rp2350.c
@@ -68,9 +70,9 @@ pico_set_program_name(wavegen "wavegen")
 pico_set_program_version(wavegen "0.1")
 
 # Generate PIO header
-pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/transmit.pio)
-pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/read.pio)
-pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/ads8688.pio)
+pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/pio/transmit.pio)
+pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/pio/read.pio)
+pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/pio/ads8688.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(wavegen 0)
@@ -86,6 +88,11 @@ target_link_libraries(wavegen
 # Add the standard include files to the build
 target_include_directories(wavegen PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/include
+        ${CMAKE_CURRENT_LIST_DIR}/src
+
+        ${CMAKE_CURRENT_LIST_DIR}/lib/tset2/src
+        ${CMAKE_CURRENT_LIST_DIR}/lib/tset2/include
         ${CMAKE_CURRENT_LIST_DIR}/lib/st7789/src
         ${CMAKE_CURRENT_LIST_DIR}/lib/st7789/interface
         ${CMAKE_CURRENT_LIST_DIR}/lib/st7789/port/rp2350
