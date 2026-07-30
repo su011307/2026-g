@@ -16,20 +16,26 @@
 #include "read.pio.h"
 
 constexpr uint32_t BUFFER_SIZE = 65536;
-// Mathematica MedianFilter[data, 7] uses a radius of 7, i.e. 15 samples.
+// Centered median filter: radius 6 gives a 13-sample window.
 constexpr uint32_t MEDIAN_RADIUS = 7;
 constexpr uint32_t MEDIAN_WINDOW = 2 * MEDIAN_RADIUS + 1;
-constexpr uint32_t REPEAT_TIME = 16;
+constexpr uint32_t REPEAT_TIME = 1;
 constexpr uint32_t FFT_SIZE = 4096;
 constexpr uint32_t FIR_ORDER = 64;
 constexpr uint32_t NUM_TAPS = FIR_ORDER + 1;
 constexpr uint32_t FIR_BLOCK_SIZE = 256;
 constexpr uint32_t DECIMATION_FACTOR = BUFFER_SIZE / FFT_SIZE;
 constexpr uint32_t SPECTRUM_BIN_COUNT = FFT_SIZE / 2 + 1;
-constexpr uint32_t PEAK_MIN_SEPARATION_BINS = 5;
+constexpr uint32_t MAX_COMPONENTS = 3;
+constexpr uint32_t MAX_PEAK_CANDIDATES = 12;
+constexpr uint32_t PEAK_MAIN_LOBE_RADIUS_BINS = 4;
+constexpr uint32_t PEAK_MIN_SEPARATION_BINS =
+    2 * PEAK_MAIN_LOBE_RADIUS_BINS + 1;
 
 constexpr float PEAK_MIN_FREQUENCY_HZ = 10'000.0f;
 constexpr float PEAK_MAX_FREQUENCY_HZ = 500'000.0f;
+constexpr float COMPONENT_MIN_AMPLITUDE_MV = 2.0f;
+constexpr float COMPONENT_MIN_SNR = 6.0f;
 
 static_assert(BUFFER_SIZE % FFT_SIZE == 0);
 static_assert((FFT_SIZE & (FFT_SIZE - 1)) == 0);
@@ -67,7 +73,9 @@ static float32_t FIR_COEFFICIENTS[NUM_TAPS] = {
 };
 
 typedef struct {
-    float top_freq[3];
+    float component_frequency[MAX_COMPONENTS];
+    float component_amplitude[MAX_COMPONENTS];
+    uint32_t component_count;
     float v_pp;
     float v_rms;
 } SignalDescription;
@@ -299,7 +307,9 @@ static float FIR_INPUT[FIR_BLOCK_SIZE] = {};
 static float FIR_OUTPUT[FIR_BLOCK_SIZE / DECIMATION_FACTOR] = {};
 static float FIR_STATE[NUM_TAPS + FIR_BLOCK_SIZE - 1] = {};
 static float SPECTRUM_SUM[SPECTRUM_BIN_COUNT] = {};
+static float SPECTRUM_SORT_SCRATCH[SPECTRUM_BIN_COUNT] = {};
 static uint16_t MEDIAN_BUFFER[BUFFER_SIZE] = {};
+static float SPECTRUM_WINDOW_ENBW_BINS = 1.0f;
 
 static float accumulated_spectrum_power(
     const float *spectrum,
@@ -308,9 +318,132 @@ static float accumulated_spectrum_power(
     return spectrum[bin] * spectrum[bin];
 }
 
-static void find_peak_frequencies(
+static float fir_gain_at_frequency(float frequency_hz) {
+    const float angular_frequency =
+        2.0f * PI * frequency_hz / ADC_TARGET_SAMPLE_RATE;
+    const float rotation_real = cosf(angular_frequency);
+    const float rotation_imag = -sinf(angular_frequency);
+
+    float phasor_real = 1.0f;
+    float phasor_imag = 0.0f;
+    float response_real = 0.0f;
+    float response_imag = 0.0f;
+    for (uint32_t tap = 0; tap < NUM_TAPS; ++tap) {
+        response_real += FIR_COEFFICIENTS[tap] * phasor_real;
+        response_imag += FIR_COEFFICIENTS[tap] * phasor_imag;
+
+        const float next_real =
+            phasor_real * rotation_real -
+            phasor_imag * rotation_imag;
+        phasor_imag =
+            phasor_real * rotation_imag +
+            phasor_imag * rotation_real;
+        phasor_real = next_real;
+    }
+    return sqrtf(
+        response_real * response_real +
+        response_imag * response_imag
+    );
+}
+
+static float median_spectrum_magnitude(
     const float *spectrum,
-    float (&frequencies)[3]
+    float spectrum_scale,
+    uint32_t first_bin,
+    uint32_t last_bin
+) {
+    const uint32_t count = last_bin - first_bin + 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        SPECTRUM_SORT_SCRATCH[i] =
+            spectrum[first_bin + i] * spectrum_scale;
+    }
+    for (uint32_t i = 1; i < count; ++i) {
+        const float value = SPECTRUM_SORT_SCRATCH[i];
+        uint32_t position = i;
+        while (
+            position > 0 &&
+            SPECTRUM_SORT_SCRATCH[position - 1] > value
+        ) {
+            SPECTRUM_SORT_SCRATCH[position] =
+                SPECTRUM_SORT_SCRATCH[position - 1];
+            --position;
+        }
+        SPECTRUM_SORT_SCRATCH[position] = value;
+    }
+    return SPECTRUM_SORT_SCRATCH[count / 2];
+}
+
+static float interpolate_peak_bin(
+    const float *spectrum,
+    uint32_t bin
+) {
+    constexpr float minimum_magnitude = 1.0e-20f;
+    const float left = logf(
+        spectrum[bin - 1] > minimum_magnitude
+            ? spectrum[bin - 1]
+            : minimum_magnitude
+    );
+    const float center = logf(
+        spectrum[bin] > minimum_magnitude
+            ? spectrum[bin]
+            : minimum_magnitude
+    );
+    const float right = logf(
+        spectrum[bin + 1] > minimum_magnitude
+            ? spectrum[bin + 1]
+            : minimum_magnitude
+    );
+    const float denominator = left - 2.0f * center + right;
+    float offset = 0.0f;
+    if (denominator != 0.0f) {
+        offset = 0.5f * (left - right) / denominator;
+        if (offset < -0.5f) {
+            offset = -0.5f;
+        } else if (offset > 0.5f) {
+            offset = 0.5f;
+        }
+    }
+    return static_cast<float>(bin) + offset;
+}
+
+static float estimate_component_amplitude_mv(
+    const float *spectrum,
+    float spectrum_scale,
+    uint32_t peak_bin,
+    float fir_gain
+) {
+    // Integrating the complete +/-4-bin Blackman-Harris main lobe and
+    // dividing by its equivalent noise bandwidth removes scalloping loss.
+    const uint32_t first_bin =
+        peak_bin > PEAK_MAIN_LOBE_RADIUS_BINS
+            ? peak_bin - PEAK_MAIN_LOBE_RADIUS_BINS
+            : 0;
+    const uint32_t requested_last_bin =
+        peak_bin + PEAK_MAIN_LOBE_RADIUS_BINS;
+    const uint32_t last_bin =
+        requested_last_bin < SPECTRUM_BIN_COUNT
+            ? requested_last_bin
+            : SPECTRUM_BIN_COUNT - 1;
+
+    float main_lobe_square_sum = 0.0f;
+    for (uint32_t bin = first_bin; bin <= last_bin; ++bin) {
+        const float magnitude = spectrum[bin] * spectrum_scale;
+        main_lobe_square_sum += magnitude * magnitude;
+    }
+    const float filtered_amplitude = sqrtf(
+        main_lobe_square_sum / SPECTRUM_WINDOW_ENBW_BINS
+    );
+
+    // Undo the known FIR magnitude response at the interpolated frequency.
+    return fir_gain > 1.0e-6f
+        ? filtered_amplitude / fir_gain
+        : 0.0f;
+}
+
+static void analyze_accumulated_spectrum(
+    const float *spectrum,
+    float spectrum_scale,
+    SignalDescription &result
 ) {
     const float bin_width_hz =
         ADC_TARGET_SAMPLE_RATE / static_cast<float>(BUFFER_SIZE);
@@ -330,8 +463,13 @@ static void find_peak_frequencies(
         last_peak_bin = FFT_SIZE / 2 - 1;
     }
 
-    SpectrumPeak peaks[3] = {};
-    for (size_t peak_index = 0; peak_index < 3; ++peak_index) {
+    SpectrumPeak candidates[MAX_PEAK_CANDIDATES] = {};
+    uint32_t candidate_count = 0;
+    for (
+        uint32_t peak_index = 0;
+        peak_index < MAX_PEAK_CANDIDATES;
+        ++peak_index
+    ) {
         SpectrumPeak best = {};
         for (uint32_t bin = first_peak_bin; bin <= last_peak_bin; ++bin) {
             const float left =
@@ -345,11 +483,11 @@ static void find_peak_frequencies(
             }
 
             bool separated = true;
-            for (size_t i = 0; i < peak_index; ++i) {
+            for (uint32_t i = 0; i < candidate_count; ++i) {
                 const uint32_t distance =
-                    bin > peaks[i].bin
-                        ? bin - peaks[i].bin
-                        : peaks[i].bin - bin;
+                    bin > candidates[i].bin
+                        ? bin - candidates[i].bin
+                        : candidates[i].bin - bin;
                 if (distance < PEAK_MIN_SEPARATION_BINS) {
                     separated = false;
                     break;
@@ -359,34 +497,73 @@ static void find_peak_frequencies(
                 best = SpectrumPeak{.bin = bin, .power = center};
             }
         }
-        peaks[peak_index] = best;
+        if (best.power == 0.0f) {
+            break;
+        }
+        candidates[candidate_count++] = best;
     }
 
-    for (size_t i = 0; i < 3; ++i) {
-        const uint32_t bin = peaks[i].bin;
-        if (peaks[i].power == 0.0f || bin == 0) {
-            frequencies[i] = 0.0f;
+    const float noise_floor = median_spectrum_magnitude(
+        spectrum,
+        spectrum_scale,
+        first_peak_bin,
+        last_peak_bin
+    );
+    const float filtered_snr_threshold =
+        noise_floor * COMPONENT_MIN_SNR;
+
+    result.component_count = 0;
+    for (
+        uint32_t i = 0;
+        i < candidate_count &&
+        result.component_count < MAX_COMPONENTS;
+        ++i
+    ) {
+        const uint32_t bin = candidates[i].bin;
+        const float interpolated_bin =
+            interpolate_peak_bin(spectrum, bin);
+        const float frequency_hz = interpolated_bin * bin_width_hz;
+        const float fir_gain = fir_gain_at_frequency(frequency_hz);
+        const float amplitude_mv = estimate_component_amplitude_mv(
+            spectrum,
+            spectrum_scale,
+            bin,
+            fir_gain
+        );
+        const float compensated_snr_threshold =
+            fir_gain > 1.0e-6f
+                ? filtered_snr_threshold / fir_gain
+                : filtered_snr_threshold;
+        const float amplitude_threshold =
+            compensated_snr_threshold > COMPONENT_MIN_AMPLITUDE_MV
+                ? compensated_snr_threshold
+                : COMPONENT_MIN_AMPLITUDE_MV;
+        if (amplitude_mv < amplitude_threshold) {
             continue;
         }
 
-        const float left =
-            accumulated_spectrum_power(spectrum, bin - 1);
-        const float center =
-            accumulated_spectrum_power(spectrum, bin);
-        const float right =
-            accumulated_spectrum_power(spectrum, bin + 1);
-        const float denominator = left - 2.0f * center + right;
-        float offset = 0.0f;
-        if (denominator != 0.0f) {
-            offset = 0.5f * (left - right) / denominator;
-            if (offset < -0.5f) {
-                offset = -0.5f;
-            } else if (offset > 0.5f) {
-                offset = 0.5f;
-            }
+        const uint32_t output_index = result.component_count++;
+        result.component_frequency[output_index] = frequency_hz;
+        result.component_amplitude[output_index] = amplitude_mv;
+    }
+
+    // Report components on the positive frequency axis in ascending order.
+    for (uint32_t i = 1; i < result.component_count; ++i) {
+        const float frequency = result.component_frequency[i];
+        const float amplitude = result.component_amplitude[i];
+        uint32_t position = i;
+        while (
+            position > 0 &&
+            result.component_frequency[position - 1] > frequency
+        ) {
+            result.component_frequency[position] =
+                result.component_frequency[position - 1];
+            result.component_amplitude[position] =
+                result.component_amplitude[position - 1];
+            --position;
         }
-        frequencies[i] =
-            (static_cast<float>(bin) + offset) * bin_width_hz;
+        result.component_frequency[position] = frequency;
+        result.component_amplitude[position] = amplitude;
     }
 }
 
@@ -396,8 +573,8 @@ SignalDescription analyze_signal(uint16_t *buffer) {
     float voltage_sum = 0.0f;
     float voltage_square_sum = 0.0;
 
-    // Match Mathematica's data = MedianFilter[data, 7]. Since voltage
-    // conversion is monotonic, filtering ADC codes gives the same median.
+    // Since voltage conversion is monotonic, filtering ADC codes gives the
+    // same median as filtering the converted voltages.
     apply_median_filter(buffer, MEDIAN_BUFFER);
 
     for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
@@ -473,11 +650,17 @@ SignalDescription analyze_signal(uint16_t *buffer) {
     // FFT_OUTPUT is scratch storage here and is overwritten by the RFFT.
     arm_blackman_harris_92db_f32(FFT_OUTPUT, FFT_SIZE);
     float window_sum = 0.0f;
+    float window_square_sum = 0.0f;
     for (uint32_t i = 0; i < FFT_SIZE; ++i) {
         const float window = FFT_OUTPUT[i];
         window_sum += window;
+        window_square_sum += window * window;
         FFT_INPUT[i] *= window;
     }
+    SPECTRUM_WINDOW_ENBW_BINS =
+        static_cast<float>(FFT_SIZE) *
+        window_square_sum /
+        (window_sum * window_sum);
 
     arm_rfft_fast_instance_f32 fft = {};
     if (arm_rfft_fast_init_4096_f32(&fft) != ARM_MATH_SUCCESS) {
@@ -551,10 +734,13 @@ int main() {
         signal_sum.v_rms += current.v_rms;
     }
 
-    find_peak_frequencies(SPECTRUM_SUM, signal_sum.top_freq);
-
     constexpr uint8_t separator = ',';
     const float repeat_scale = 1.0f / static_cast<float>(REPEAT_TIME);
+    analyze_accumulated_spectrum(
+        SPECTRUM_SUM,
+        repeat_scale,
+        signal_sum
+    );
 
     // uart_puts(uart_port, "SPECTRUM_MV,");
     // for (uint32_t bin = 0; bin < SPECTRUM_BIN_COUNT; ++bin) {
@@ -564,12 +750,29 @@ int main() {
     //     uart_write_float(SPECTRUM_SUM[bin] * repeat_scale);
     // }
 
-    uart_puts(uart_port, "PEAKS_HZ,");
-    for (size_t i = 0; i < 3; ++i) {
+    uart_puts(uart_port, "COMPONENT_COUNT,");
+    const uint8_t component_count_character = static_cast<uint8_t>(
+        '0' + signal_sum.component_count
+    );
+    uart_write_blocking(
+        uart_port,
+        &component_count_character,
+        1
+    );
+
+    uart_puts(uart_port, "\r\nPEAKS_HZ,");
+    for (uint32_t i = 0; i < signal_sum.component_count; ++i) {
         if (i != 0) {
             uart_write_blocking(uart_port, &separator, 1);
         }
-        uart_write_float(signal_sum.top_freq[i]);
+        uart_write_float(signal_sum.component_frequency[i]);
+    }
+    uart_puts(uart_port, "\r\nAMPLITUDES_MV,");
+    for (uint32_t i = 0; i < signal_sum.component_count; ++i) {
+        if (i != 0) {
+            uart_write_blocking(uart_port, &separator, 1);
+        }
+        uart_write_float(signal_sum.component_amplitude[i]);
     }
     uart_puts(uart_port, "\r\nVPP_MV,");
     uart_write_float(signal_sum.v_pp * repeat_scale);
