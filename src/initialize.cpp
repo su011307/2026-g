@@ -3,7 +3,7 @@
 float sample_clock_divider() {
     constexpr float pio_cycle_per_sample = 2.0f;
     return static_cast<float>(clock_get_hz(clk_sys)) / 
-        (ADC_TARGET_SAMPLE_RATE * pio_cycle_per_sample);
+        (adc::TARGET_SAMPLE_RATE * pio_cycle_per_sample);
 }
 
 void pio_init(
@@ -11,34 +11,34 @@ void pio_init(
     uint sm,
     uint offset
 ){
-    for (auto i : ADC_DATA_PINS) {
+    for (auto i : adc::DATA_PINS) {
         pio_gpio_init(pio, i);
         gpio_disable_pulls(i);
     }
 
-    pio_gpio_init(pio, ADC_OTR_PIN);
-    pio_gpio_init(pio, ADC_CLK_PIN);
-    gpio_disable_pulls(ADC_OTR_PIN);
-    gpio_disable_pulls(ADC_CLK_PIN);
+    pio_gpio_init(pio, adc::OTR_PIN);
+    pio_gpio_init(pio, adc::CLK_PIN);
+    gpio_disable_pulls(adc::OTR_PIN);
+    gpio_disable_pulls(adc::CLK_PIN);
 
     auto cfg = read_program_get_default_config(offset);
-    sm_config_set_in_pins(&cfg, ADC_CAPTURE_BASE);
-    sm_config_set_in_pin_count(&cfg, ADC_CAPTURE_COUNT);
-    sm_config_set_sideset_pins(&cfg, ADC_CLK_PIN);
-    sm_config_set_in_shift(&cfg, false, true, ADC_CAPTURE_COUNT);
+    sm_config_set_in_pins(&cfg, adc::CAPTURE_BASE);
+    sm_config_set_in_pin_count(&cfg, adc::CAPTURE_COUNT);
+    sm_config_set_sideset_pins(&cfg, adc::CLK_PIN);
+    sm_config_set_in_shift(&cfg, false, true, adc::CAPTURE_COUNT);
     sm_config_set_clkdiv(&cfg, sample_clock_divider());
 
     if (pio_sm_init(pio, sm, offset, &cfg) != PICO_OK) {
         panic("cannot initialize ADC PIO state machine");
     }
     pio_sm_set_consecutive_pindirs(
-        pio, sm, ADC_CAPTURE_BASE, ADC_CAPTURE_COUNT, false
+        pio, sm, adc::CAPTURE_BASE, adc::CAPTURE_COUNT, false
     );
     pio_sm_set_consecutive_pindirs(
-        pio, sm, ADC_CLK_PIN, 1, true
+        pio, sm, adc::CLK_PIN, 1, true
     );
     pio_sm_set_pins_with_mask64(
-        pio, sm, 0, 1ull << ADC_CLK_PIN
+        pio, sm, 0, 1ull << adc::CLK_PIN
     );
 }
 

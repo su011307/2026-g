@@ -1,6 +1,6 @@
-#include "display.h"
 #include <cstdint>
 #include <hardware/uart.h>
+#include "display.hpp"
 
 Screen::Screen(uart_inst_t *const uart_port) : uart_port_(uart_port) {}
 

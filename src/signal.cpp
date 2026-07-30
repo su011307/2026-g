@@ -109,7 +109,7 @@ static float accumulated_spectrum_power(
 
 static float fir_gain_at_frequency(float frequency_hz) {
     const float angular_frequency =
-        2.0f * PI * frequency_hz / ADC_TARGET_SAMPLE_RATE;
+        2.0f * PI * frequency_hz / adc::TARGET_SAMPLE_RATE;
     const float rotation_real = cosf(angular_frequency);
     const float rotation_imag = -sinf(angular_frequency);
 
@@ -237,7 +237,7 @@ void analyze_accumulated_spectrum(
     const float *spectrum = SPECTRUM_SUM;
     float *spectrum_sort_scratch = SPECTRUM_SORT_SCRATCH;
     const float bin_width_hz =
-        ADC_TARGET_SAMPLE_RATE / static_cast<float>(BUFFER_SIZE);
+        adc::TARGET_SAMPLE_RATE / static_cast<float>(BUFFER_SIZE);
 
     // Include bins whose +/- half-bin interval intersects 10--500 kHz.
     // The 10 kHz tone maps to bin 10 (9.918 kHz), not bin 11.

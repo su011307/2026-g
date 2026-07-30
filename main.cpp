@@ -1,6 +1,9 @@
 #include <arm_math.h>
+#include <hardware/uart.h>
+#include <pico/stdio.h>
 
 #include "definition.hpp"
+#include "display.hpp"
 #include "initialize.hpp"
 #include "signal.hpp"
 #include "utility.hpp"
@@ -19,17 +22,27 @@ constexpr uint adc_sm = 0;
 static uint16_t RAW_BUFFER[sig::BUFFER_SIZE] = {};
 constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0]);
 
+void init_peripheral(
+    uart_inst_t *const screen_uart_port,
+    uart_inst_t *const serial_uart_port
+) {
+    stdio_init_all();
+    uart_init(serial_uart_port, 150'0000);
+    uart_init(screen_uart_port, 115200);
+
+}
+
 int main() {
     stdio_init_all();
     uart_init(uart_port, 150'0000);
 
-    gpio_init(UART_TX_PIN);
-    gpio_init(UART_RX_PIN);
+    gpio_init(dbg::SERIAL_UART_TX_PIN);
+    gpio_init(dbg::SERIAL_UART_RX_PIN);
 
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(dbg::SERIAL_UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(dbg::SERIAL_UART_RX_PIN, GPIO_FUNC_UART);
 
-    if (pio_set_gpio_base(adc_pio, ADC_PIO_GPIO_BASE) != PICO_OK) {
+    if (pio_set_gpio_base(adc_pio, adc::PIO_GPIO_BASE) != PICO_OK) {
         panic("cannot select ADC PIO GPIO window");
     }
     auto adc_offset = pio_add_program(adc_pio, &read_program);
