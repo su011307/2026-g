@@ -25,6 +25,7 @@ static float SPECTRUM_SUM[SPECTRUM_BIN_COUNT] = {};
 static float SPECTRUM_SORT_SCRATCH[SPECTRUM_BIN_COUNT] = {};
 static uint16_t MEDIAN_BUFFER[BUFFER_SIZE] = {};
 static float SPECTRUM_WINDOW_ENBW_BINS = 1.0f;
+static constexpr float PLOT_VERTICAL_RANGE = 40.0f;
 
 void reset_signal_analysis() {
     for (uint32_t bin = 0; bin < SPECTRUM_BIN_COUNT; ++bin) {
@@ -472,4 +473,153 @@ SignalDescription analyze_signal(uint16_t *buffer) {
     }
 
     return result;
+}
+
+static void clear_plot(SignalPlot &plot, uint16_t sample_count) {
+    plot.sample_count = sample_count;
+    for (uint32_t i = 0; i < sample_count; ++i) {
+        plot.samples[i] = 0.0f;
+    }
+}
+
+static float interpolated_median_voltage(float sample_index) {
+    uint32_t left = static_cast<uint32_t>(sample_index);
+    if (left >= BUFFER_SIZE - 1) {
+        left = BUFFER_SIZE - 2;
+    }
+    const float fraction = sample_index - static_cast<float>(left);
+    const float left_voltage = compute_adc_voltage(MEDIAN_BUFFER[left]);
+    const float right_voltage = compute_adc_voltage(MEDIAN_BUFFER[left + 1]);
+    return left_voltage + fraction * (right_voltage - left_voltage);
+}
+
+bool find_wave(
+    const SignalDescription &signal,
+    bool one_wave,
+    SignalPlot &plot
+) {
+    clear_plot(plot, static_cast<uint16_t>(PLOT_SIZE));
+    if (
+        signal.component_count == 0 ||
+        signal.component_frequency[0] <= 0.0f
+    ) {
+        return false;
+    }
+
+    const float period_samples =
+        adc::TARGET_SAMPLE_RATE / signal.component_frequency[0];
+    const float cycle_count = one_wave ? 1.0f : 3.0f;
+    const float source_span = period_samples * cycle_count;
+    const uint32_t source_span_ceil =
+        static_cast<uint32_t>(ceilf(source_span));
+    if (
+        source_span_ceil + MEDIAN_RADIUS + 2 >= BUFFER_SIZE ||
+        period_samples < 2.0f
+    ) {
+        return false;
+    }
+
+    // Start at the first voltage maximum in a fundamental period. This gives
+    // every redraw a deterministic phase without exposing the median buffer.
+    const uint32_t latest_start =
+        BUFFER_SIZE - source_span_ceil - 2;
+    uint32_t start = MEDIAN_RADIUS;
+    uint32_t search_end =
+        start + static_cast<uint32_t>(ceilf(period_samples));
+    if (search_end > latest_start) {
+        search_end = latest_start;
+    }
+    for (uint32_t i = start + 1; i <= search_end; ++i) {
+        // ADC conversion is descending, so the smallest code is the maximum
+        // voltage.
+        if (MEDIAN_BUFFER[i] < MEDIAN_BUFFER[start]) {
+            start = i;
+        }
+    }
+
+    float min_voltage = interpolated_median_voltage(
+        static_cast<float>(start)
+    );
+    float max_voltage = min_voltage;
+    const uint32_t last_source_sample =
+        start + source_span_ceil + 1;
+    for (uint32_t i = start + 1; i <= last_source_sample; ++i) {
+        const float voltage = compute_adc_voltage(MEDIAN_BUFFER[i]);
+        if (voltage < min_voltage) {
+            min_voltage = voltage;
+        }
+        if (voltage > max_voltage) {
+            max_voltage = voltage;
+        }
+    }
+
+    const float voltage_span = max_voltage - min_voltage;
+    if (voltage_span <= 1.0e-6f) {
+        return false;
+    }
+    const float center_voltage = 0.5f * (min_voltage + max_voltage);
+    const float plot_scale =
+        2.0f * PLOT_VERTICAL_RANGE / voltage_span;
+
+    for (uint32_t i = 0; i < PLOT_SIZE; ++i) {
+        const float position =
+            static_cast<float>(start) +
+            source_span * static_cast<float>(i) /
+                static_cast<float>(PLOT_SIZE - 1);
+        float value =
+            (interpolated_median_voltage(position) - center_voltage) *
+            plot_scale;
+        if (value < -PLOT_VERTICAL_RANGE) {
+            value = -PLOT_VERTICAL_RANGE;
+        } else if (value > PLOT_VERTICAL_RANGE) {
+            value = PLOT_VERTICAL_RANGE;
+        }
+        plot.samples[i] = value;
+    }
+    return true;
+}
+
+void resample_spectrum(float spectrum_scale, SignalPlot &plot) {
+    clear_plot(plot, static_cast<uint16_t>(SPECTRUM_SIZE));
+
+    const float bin_width_hz =
+        adc::TARGET_SAMPLE_RATE / static_cast<float>(BUFFER_SIZE);
+    uint32_t last_bin = static_cast<uint32_t>(
+        floorf(PEAK_MAX_FREQUENCY_HZ / bin_width_hz)
+    );
+    if (last_bin >= SPECTRUM_BIN_COUNT) {
+        last_bin = SPECTRUM_BIN_COUNT - 1;
+    }
+
+    float maximum = 0.0f;
+    for (uint32_t i = 0; i < SPECTRUM_SIZE; ++i) {
+        const float source_position =
+            static_cast<float>(last_bin) * static_cast<float>(i) /
+            static_cast<float>(SPECTRUM_SIZE - 1);
+        const uint32_t left = static_cast<uint32_t>(source_position);
+        const uint32_t right = left < last_bin ? left + 1 : left;
+
+        // Taking the larger adjacent bin preserves a narrow spectral peak
+        // while mapping the 0--500 kHz positive spectrum to the display.
+        const float left_magnitude =
+            SPECTRUM_SUM[left] * spectrum_scale;
+        const float right_magnitude =
+            SPECTRUM_SUM[right] * spectrum_scale;
+        const float magnitude =
+            left_magnitude > right_magnitude
+                ? left_magnitude
+                : right_magnitude;
+        plot.samples[i] = magnitude;
+        if (magnitude > maximum) {
+            maximum = magnitude;
+        }
+    }
+
+    if (maximum <= 0.0f) {
+        return;
+    }
+    const float plot_scale = PLOT_VERTICAL_RANGE / maximum;
+    for (uint32_t i = 0; i < SPECTRUM_SIZE; ++i) {
+        plot.samples[i] *= plot_scale;
+    }
 }

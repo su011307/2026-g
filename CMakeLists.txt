@@ -51,6 +51,11 @@ FetchContent_Declare(cmsis_dsp
 )
 FetchContent_MakeAvailable(cmsis_dsp)
 
+# ARM GCC 15.2 ICEs on several unused CMSIS Q31 translation units at -O1 and
+# above. Keep the third-party target at its known-good optimized-debug level;
+# the application target below is still built with -O2.
+target_compile_options(CMSISDSP PRIVATE -Og)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(wavegen
@@ -70,6 +75,9 @@ add_executable(wavegen
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c
         lib/st7789/port/rp2350/driver_st7789_rp2350.c
 )
+
+# Keep the application path optimized even in an IDE Debug configuration.
+target_compile_options(wavegen PRIVATE -O2)
 
 pico_set_program_name(wavegen "wavegen")
 pico_set_program_version(wavegen "0.1")

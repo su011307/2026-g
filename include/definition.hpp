@@ -48,6 +48,12 @@ namespace dbg {
 
 namespace sig {
     constexpr uint32_t BUFFER_SIZE = 65536;
+    constexpr uint32_t SPECTRUM_SIZE = 512;
+    constexpr uint32_t PLOT_SIZE = 512;
+
+    static_assert(PLOT_SIZE >= 500 && PLOT_SIZE <= 600);
+    static_assert(SPECTRUM_SIZE > 1);
+    static_assert(SPECTRUM_SIZE <= PLOT_SIZE);
 
     namespace flt {
         constexpr uint32_t MEDIAN_RADIUS = 7;
@@ -115,7 +121,7 @@ namespace oled {
 };
 
 namespace disp {
-    constexpr uint DISP_UART_TX_PIN = 8;
-    constexpr uint DISP_UART_RX_PIN = 9;
+    constexpr uint DISP_UART_TX_PIN = 16;
+    constexpr uint DISP_UART_RX_PIN = 17;
     constexpr uint DISP_UART_BAUDRATE = 115200;
 };

@@ -1,39 +1,19 @@
-#ifndef DISPLAY_FOR_G_H
-#define DISPLAY_FOR_G_H
-#include <stdint.h>
+#pragma once
 
+#include <cstdint>
 #include <hardware/uart.h>
-#include <pico/time.h>
 
-#include "definition.hpp"
-
-// 嵌入式：
-// #include <hardware/uart.h>
-// #include "definition.h"
-/*// 你放definition.h里面
-#define DISP_UART_PORT uart1
-constexpr uint DISP_UART_TX_PIN = 8;
-constexpr uint DISP_UART_RX_PIN = 9;
-constexpr uint32_t DISP_UART_BAUDRATE = 115200;
-*/
-class Screen {
+class Screen final {
 public:
-    Screen(uart_inst_t *const uart_port);
-    ~Screen();
-    void send_graph(float data[], uint16_t length);
+    explicit Screen(uart_inst_t *uart_port, uart_inst_t *debug_port);
+    void send_graph(const float data[], uint16_t length);
+    void send_text(const char *text, uint8_t size);
 
-    void send_text(char *t, uint8_t size);
-    uint8_t get_button();
-
-protected:
 private:
-    float strentch = 3;
+    float stretch_ = 3.0f;
     uart_inst_t *const uart_port_;
-
-    uint8_t offset = 128;
-
-    uint8_t rx_state = 0;
-    uint8_t last_cmd = 0;
+    uart_inst_t *const debug_port_;
+    uint8_t offset_ = 128;
 };
 
 /*
@@ -43,4 +23,3 @@ private:
 “3周期”：0x33, 0xFF, 0xFF, 0xFF
 “电压频谱显示”：0x76, 0xFF, 0xFF, 0xFF
 */
-#endif // DISPLAY_FOR_G_H

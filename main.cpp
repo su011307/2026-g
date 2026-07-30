@@ -1,9 +1,13 @@
 #include <arm_math.h>
+#include <cstdint>
 #include <hardware/gpio.h>
+#include <hardware/irq.h>
 #include <hardware/spi.h>
-#include <hardware/structs/io_bank0.h>
 #include <hardware/uart.h>
+#include <pico/platform/compiler.h>
+#include <pico/platform/sections.h>
 #include <pico/stdio.h>
+#include <pico/stdlib.h>
 
 #include "definition.hpp"
 #include "display.hpp"
@@ -19,13 +23,37 @@ static_assert(REPEAT_TIME > 0);
 
 const auto oled_spi = spi0;
 const auto serial_uart = uart0;
-const auto screen_uart = uart1;
+const auto screen_uart = uart0;
 
 PIO const adc_pio = pio0;
 constexpr uint adc_sm = 0;
 
 static uint16_t RAW_BUFFER[sig::BUFFER_SIZE] = {};
 constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0]);
+
+enum class WorkMode : uint8_t {
+    ShowOneCycle,
+    ShowThreeCycle,
+    ShowSpectrum,
+    ShowDescription
+};
+
+static Screen sc = Screen(screen_uart, serial_uart);
+constexpr uint8_t WORK_QUEUE_SIZE = 16;
+constexpr uint8_t WORK_QUEUE_MASK = WORK_QUEUE_SIZE - 1;
+constexpr uint8_t WORK_MODE_COUNT = 4;
+static_assert((WORK_QUEUE_SIZE & WORK_QUEUE_MASK) == 0);
+static_assert(
+    static_cast<uint8_t>(WorkMode::ShowDescription) + 1 ==
+    WORK_MODE_COUNT
+);
+
+static volatile WorkMode WORK_QUEUE[WORK_QUEUE_SIZE] = {};
+static volatile uint8_t WORK_QUEUE_HEAD = 0;
+static volatile uint8_t WORK_QUEUE_TAIL = 0;
+static SignalPlot SCREEN_PLOT = {};
+
+void __isr __not_in_flash_func(screen_irq_handler)();
 
 void init_peripheral(
     spi_inst_t *const oled_spi_port,
@@ -34,7 +62,7 @@ void init_peripheral(
 ) {
     stdio_init_all();
     spi_init(oled_spi_port, 150'0000);
-    uart_init(serial_uart_port, 150'0000);
+    uart_init(serial_uart_port, disp::DISP_UART_BAUDRATE);
     uart_init(screen_uart_port, disp::DISP_UART_BAUDRATE);
 
     gpio_init(dbg::SERIAL_UART_TX_PIN);
@@ -46,10 +74,186 @@ void init_peripheral(
     gpio_set_function(dbg::SERIAL_UART_RX_PIN, GPIO_FUNC_UART);
     gpio_set_function(disp::DISP_UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(disp::DISP_UART_RX_PIN, GPIO_FUNC_UART);
+
+    irq_set_exclusive_handler(UART1_IRQ, screen_irq_handler);
+    irq_set_priority(UART1_IRQ, PICO_LOWEST_IRQ_PRIORITY);
+    irq_set_enabled(UART1_IRQ, true);
+    uart_set_irq_enables(screen_uart_port, true, false);
+}
+
+void __isr __not_in_flash_func(screen_irq_handler)() {
+    static uint8_t receive_state = 0;
+    static uint8_t command = 0;
+    static WorkMode selected_mode = WorkMode::ShowDescription;
+
+    while (uart_is_readable(screen_uart)) {
+        const uint8_t byte = static_cast<uint8_t>(
+            uart_get_hw(screen_uart)->dr
+        );
+        switch (receive_state) {
+            case 0:
+                if (
+                    byte == 0x2b ||
+                    byte == 0x2d ||
+                    byte == 0x31 ||
+                    byte == 0x33 ||
+                    byte == 0x76
+                ) {
+                    command = byte;
+                    receive_state = 1;
+                }
+                break;
+            case 1:
+                receive_state = byte == 0xff ? 2 : 0;
+                break;
+            case 2:
+                receive_state = byte == 0xff ? 3 : 0;
+                break;
+            case 3: {
+                receive_state = 0;
+                if (byte != 0xff) {
+                    break;
+                }
+
+                switch (command) {
+                    case 0x2b:
+                        selected_mode = static_cast<WorkMode>(
+                            (
+                                static_cast<uint8_t>(selected_mode) +
+                                1
+                            ) % WORK_MODE_COUNT
+                        );
+                        break;
+                    case 0x2d:
+                        selected_mode = static_cast<WorkMode>(
+                            (
+                                static_cast<uint8_t>(selected_mode) +
+                                WORK_MODE_COUNT - 1
+                            ) % WORK_MODE_COUNT
+                        );
+                        break;
+                    case 0x31:
+                        selected_mode = WorkMode::ShowOneCycle;
+                        break;
+                    case 0x33:
+                        selected_mode = WorkMode::ShowThreeCycle;
+                        break;
+                    case 0x76:
+                        selected_mode = WorkMode::ShowSpectrum;
+                        break;
+                    default:
+                        break;
+                }
+
+                const uint8_t head = WORK_QUEUE_HEAD;
+                const uint8_t next_head =
+                    (head + 1) & WORK_QUEUE_MASK;
+                if (next_head != WORK_QUEUE_TAIL) {
+                    WORK_QUEUE[head] = selected_mode;
+                    WORK_QUEUE_HEAD = next_head;
+                }
+                break;
+            }
+            default:
+                receive_state = 0;
+                break;
+        }
+    }
+}
+
+static bool try_pop_work_mode(WorkMode &mode) {
+    const uint8_t tail = WORK_QUEUE_TAIL;
+    if (tail == WORK_QUEUE_HEAD) {
+        return false;
+    }
+    mode = WORK_QUEUE[tail];
+    WORK_QUEUE_TAIL = (tail + 1) & WORK_QUEUE_MASK;
+    return true;
+}
+
+static uint8_t append_text(
+    char *output,
+    uint8_t index,
+    const char *text
+) {
+    while (*text != '\0') {
+        output[index++] = *text++;
+    }
+    return index;
+}
+
+static uint8_t append_float(
+    char *output,
+    uint8_t index,
+    float value
+) {
+    return index + encode_float_to_string(
+        value,
+        reinterpret_cast<uint8_t *>(output + index)
+    );
+}
+
+static void handle_show_one_cycle(
+    const SignalDescription &signal
+) {
+    if (find_wave(signal, true, SCREEN_PLOT)) {
+        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+    } else {
+        constexpr char message[] = "No fundamental";
+        sc.send_text(message, sizeof(message) - 1);
+    }
+}
+
+static void handle_show_three_cycles(
+    const SignalDescription &signal
+) {
+    if (find_wave(signal, false, SCREEN_PLOT)) {
+        sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+    } else {
+        constexpr char message[] = "No fundamental";
+        sc.send_text(message, sizeof(message) - 1);
+    }
+}
+
+static void handle_show_spectrum(float spectrum_scale) {
+    resample_spectrum(spectrum_scale, SCREEN_PLOT);
+    sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+}
+
+static void handle_show_description(
+    const SignalDescription &signal,
+    float repeat_scale
+) {
+    char description[80] = {};
+    uint8_t length = append_text(description, 0, "F:");
+    if (signal.component_count == 0) {
+        length = append_text(description, length, "--");
+    } else {
+        length = append_float(
+            description,
+            length,
+            signal.component_frequency[0]
+        );
+    }
+    length = append_text(description, length, " Vpp:");
+    length = append_float(
+        description,
+        length,
+        signal.v_pp * repeat_scale
+    );
+    length = append_text(description, length, " Vrms:");
+    length = append_float(
+        description,
+        length,
+        signal.v_rms * repeat_scale
+    );
+    sc.send_text(description, length);
 }
 
 int main() {
     init_peripheral(oled_spi, screen_uart, serial_uart);
+    const char greet[] = "hello";
+    sc.send_text(greet, sizeof(greet));
 
     if (pio_set_gpio_base(adc_pio, adc::PIO_GPIO_BASE) != PICO_OK) {
         panic("cannot select ADC PIO GPIO window");
@@ -121,5 +325,29 @@ int main() {
     uart_write_float(serial_uart, signal_sum.v_rms * repeat_scale);
     uart_puts(serial_uart, "\r\n");
     uart_tx_wait_blocking(serial_uart);
-    return 0;
+
+    handle_show_description(signal_sum, repeat_scale);
+
+    while (1) {
+        WorkMode request;
+        if (!try_pop_work_mode(request)) {
+            tight_loop_contents();
+            continue;
+        }
+
+        switch (request) {
+            case WorkMode::ShowOneCycle:
+                handle_show_one_cycle(signal_sum);
+                break;
+            case WorkMode::ShowThreeCycle:
+                handle_show_three_cycles(signal_sum);
+                break;
+            case WorkMode::ShowSpectrum:
+                handle_show_spectrum(repeat_scale);
+                break;
+            case WorkMode::ShowDescription:
+                handle_show_description(signal_sum, repeat_scale);
+                break;
+        }
+    }
 }
