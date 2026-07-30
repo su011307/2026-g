@@ -106,14 +106,12 @@ namespace oled {
     // lcd的引脚
     constexpr uint SPI_MISO_PIN = 16;
     constexpr uint SPI_CS_PIN = 17;
-    constexpr uint SPI_SCK_PIN = 18;
-    constexpr uint SPI_MOSI_PIN = 19;
-    constexpr uint LCD_SCL_PIN = SPI_SCK_PIN;
-    constexpr uint LCD_SDA_PIN = SPI_MOSI_PIN;
-    constexpr uint LCD_RST_PIN = 20;
-    constexpr uint LCD_DC_PIN = 21;
-    constexpr uint LCD_CS_PIN = 22;
-    constexpr uint LCD_BL_PIN = 23;
+    constexpr uint SCL_PIN = 18;
+    constexpr uint SDA_PIN = 19;
+    constexpr uint RST_PIN = 20;
+    constexpr uint DC_PIN = 21;
+    constexpr uint CS_PIN = 22;
+    constexpr uint BL_PIN = 23;
 };
 
 namespace disp {
