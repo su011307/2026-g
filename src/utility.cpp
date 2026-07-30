@@ -65,18 +65,6 @@ void unpack_adc_buffer(uint16_t *buffer) {
     }
 }
 
-uint32_t reflected_sample_index(int32_t index) {
-    if (index < 0) {
-        return static_cast<uint32_t>(-index - 1);
-    }
-    if (index >= static_cast<int32_t>(sig::BUFFER_SIZE)) {
-        return static_cast<uint32_t>(
-            2 * static_cast<int32_t>(sig::BUFFER_SIZE) - index - 1
-        );
-    }
-    return static_cast<uint32_t>(index);
-}
-
 void uart_write_float(uart_inst_t *const uart_port, float value) {
     uint8_t uart_buf[16] = {};
     const uint8_t size = encode_float_to_string(value, uart_buf);

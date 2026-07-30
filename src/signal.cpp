@@ -33,38 +33,76 @@ void reset_signal_analysis() {
     }
 }
 
-static uint16_t median_at(
-    const uint16_t *samples,
-    uint32_t center
-) {
-    uint16_t sorted[MEDIAN_WINDOW];
-    for (uint32_t i = 0; i < MEDIAN_WINDOW; ++i) {
-        const int32_t source_index =
-            static_cast<int32_t>(center) +
-            static_cast<int32_t>(i) -
-            static_cast<int32_t>(MEDIAN_RADIUS);
-        sorted[i] = samples[reflected_sample_index(source_index)];
-    }
-
-    // The window is small and fixed. Only the middle item is used.
+static void sort_median_window(uint16_t *window) {
     for (uint32_t i = 1; i < MEDIAN_WINDOW; ++i) {
-        const uint16_t value = sorted[i];
+        const uint16_t value = window[i];
         uint32_t position = i;
-        while (position > 0 && sorted[position - 1] > value) {
-            sorted[position] = sorted[position - 1];
+        while (position > 0 && window[position - 1] > value) {
+            window[position] = window[position - 1];
             --position;
         }
-        sorted[position] = value;
+        window[position] = value;
     }
-    return sorted[MEDIAN_WINDOW / 2];
+}
+
+static void replace_sorted_window_value(
+    uint16_t *window,
+    uint16_t outgoing,
+    uint16_t incoming
+) {
+    if (outgoing == incoming) {
+        return;
+    }
+
+    uint32_t position = 0;
+    while (window[position] != outgoing) {
+        ++position;
+    }
+
+    if (incoming < outgoing) {
+        while (position > 0 && window[position - 1] > incoming) {
+            window[position] = window[position - 1];
+            --position;
+        }
+    } else {
+        while (
+            position + 1 < MEDIAN_WINDOW &&
+            window[position + 1] < incoming
+        ) {
+            window[position] = window[position + 1];
+            ++position;
+        }
+    }
+    window[position] = incoming;
 }
 
 static void apply_median_filter(
     const uint16_t *input,
     uint16_t *output
 ) {
-    for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
-        output[i] = median_at(input, i);
+    uint16_t window[MEDIAN_WINDOW];
+    for (uint32_t i = 0; i < MEDIAN_WINDOW; ++i) {
+        const int32_t source_index =
+            static_cast<int32_t>(i) -
+            static_cast<int32_t>(MEDIAN_RADIUS);
+        window[i] = input[reflected_sample_index(source_index)];
+    }
+    sort_median_window(window);
+    output[0] = window[MEDIAN_RADIUS];
+
+    for (uint32_t center = 1; center < BUFFER_SIZE; ++center) {
+        const int32_t outgoing_index =
+            static_cast<int32_t>(center) -
+            static_cast<int32_t>(MEDIAN_RADIUS) - 1;
+        const int32_t incoming_index =
+            static_cast<int32_t>(center) +
+            static_cast<int32_t>(MEDIAN_RADIUS);
+        replace_sorted_window_value(
+            window,
+            input[reflected_sample_index(outgoing_index)],
+            input[reflected_sample_index(incoming_index)]
+        );
+        output[center] = window[MEDIAN_RADIUS];
     }
 }
 
