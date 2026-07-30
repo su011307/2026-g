@@ -1,31 +1,76 @@
 #include "display.h"
+#include <cstdint>
+#include <hardware/uart.h>
 
-Screen::Screen()
-{
-    //ctor
+Screen::Screen(uart_inst_t *const uart_port) : uart_port_(uart_port) {}
+
+uint8_t embed_uint_to_string(
+    uint16_t data, 
+    uint8_t *output_buffer
+) {
+    uint8_t idx = 0;
+    uint32_t heading = 10000;
+
+    for (auto i : "addt s0.id,0,") {
+        output_buffer[idx++] = i;
+    }
+    
+    while (data % heading != 0) {
+        auto digit = data % heading;
+        output_buffer[idx++] = '0' + digit;
+    }
+
+    for (auto i: "\xff\xff\xff") {
+        output_buffer[idx++] = i;
+    }
+
+    return idx;
+}
+
+uint8_t embed_string_to_string(
+    char *target_string,
+    uint8_t string_length,
+    uint8_t *output_buffer
+) {
+    auto idx = 0;
+    for (auto i : "slt0.txt=\"") {
+        output_buffer[idx++] = i;
+    }
+
+    for (auto i = 0; i < string_length; i++) {
+        output_buffer[idx++] = target_string[i];
+    }
+
+    for (auto i : "\"\xff\xff\xff") {
+        output_buffer[idx++] = i;
+    }
+
+    return idx;
 }
 
 void Screen::send_graph(float data[], uint16_t length)
 {
-    printf("addt s0.id,0,%d\xff\xff\xff", length);
+    uint8_t string_buffer[20] = {};
+    auto size = embed_uint_to_string(length, string_buffer);
+    uart_write_blocking(uart_port_, string_buffer, size);
     sleep_ms(100);
-    for(uint16_t i = 0; i < length; i++)
-    {
+    for(uint16_t i = 0; i < length; i++) {
         uint8_t data_casted = (int)(data[i] * strentch + offset) % 256;
-        printf("%c", data_casted);
+        uart_putc(uart_port_, data_casted);
     }
-    printf("\x01\xff\xff\xff");
+
+    uart_puts(uart_port_, "\x01\xff\xff\xff");
 }
 
 
-void Screen::send_text(char t[]) {
-    printf("slt0.txt=\"%s\"\xff\xff\xff", t);
+void Screen::send_text(char *t, uint8_t length) {
+    uint8_t string_buffer[64] = {};
+    auto size = embed_string_to_string(t, length, string_buffer);
+    uart_write_blocking(uart_port_, string_buffer, size);
+    // printf("slt0.txt=\"%s\"\xff\xff\xff", t);
 }
 
-Screen::~Screen()
-{
-    //dtor
-}
+Screen::~Screen() {}
 
 uint8_t Screen::get_button() {
 /*

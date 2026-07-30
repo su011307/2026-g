@@ -1,9 +1,11 @@
 #ifndef DISPLAY_FOR_G_H
 #define DISPLAY_FOR_G_H
 #include <stdint.h>
-#include <stdio.h>
 
+#include <hardware/uart.h>
 #include <pico/time.h>
+
+#include "definition.hpp"
 
 // 嵌入式：
 // #include <hardware/uart.h>
@@ -14,20 +16,21 @@ constexpr uint DISP_UART_TX_PIN = 8;
 constexpr uint DISP_UART_RX_PIN = 9;
 constexpr uint32_t DISP_UART_BAUDRATE = 115200;
 */
-class Screen
-{
+class Screen {
 public:
-    Screen();
+    Screen(uart_inst_t *const uart_port);
     ~Screen();
     void send_graph(float data[], uint16_t length);
 
-    void send_text(char t[]);
+    void send_text(char *t, uint8_t size);
     uint8_t get_button();
 
 protected:
 private:
-    uint8_t offset = 128;
     float strentch = 3;
+    uart_inst_t *const uart_port_;
+
+    uint8_t offset = 128;
 
     uint8_t rx_state = 0;
     uint8_t last_cmd = 0;

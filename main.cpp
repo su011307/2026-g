@@ -1,7 +1,5 @@
 #include <arm_math.h>
 
-#include <math.h>
-
 #include "definition.hpp"
 #include "initialize.hpp"
 #include "signal.hpp"
