@@ -6,9 +6,10 @@ public:
     Screen() = default;
     void send_graph(const float data[], uint16_t length);
     void send_text(const char *text);
+    void send_graph_with_step(const float data[], uint16_t length, uint16_t step);
 
 private:
-    float stretch_ = 10.0f;
+    float stretch_ = 2.0f;
     uint16_t offset_ = 250;
 };
 
