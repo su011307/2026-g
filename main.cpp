@@ -4,13 +4,17 @@
 #include <hardware/irq.h>
 #include <hardware/spi.h>
 #include <hardware/uart.h>
+#include <math.h>
 #include <pico/platform/compiler.h>
 #include <pico/platform/sections.h>
 #include <pico/stdio.h>
+#include <pico/stdio_uart.h>
 #include <pico/stdlib.h>
+#include <pico/time.h>
 
 #include "definition.hpp"
 #include "display.hpp"
+#include "dsp/fast_math_functions.h"
 #include "initialize.hpp"
 #include "signal.hpp"
 #include "utility.hpp"
@@ -20,6 +24,7 @@
 // Centered median filter: radius 6 gives a 13-sample window.
 constexpr uint32_t REPEAT_TIME = 3;
 static_assert(REPEAT_TIME > 0);
+
 
 const auto oled_spi = spi0;
 const auto serial_uart = uart0;
@@ -38,7 +43,7 @@ enum class WorkMode : uint8_t {
     ShowDescription
 };
 
-static Screen sc = Screen(screen_uart, serial_uart);
+static Screen sc;
 constexpr uint8_t WORK_QUEUE_SIZE = 16;
 constexpr uint8_t WORK_QUEUE_MASK = WORK_QUEUE_SIZE - 1;
 constexpr uint8_t WORK_MODE_COUNT = 4;
@@ -60,10 +65,16 @@ void init_peripheral(
     uart_inst_t *const screen_uart_port,
     uart_inst_t *const serial_uart_port
 ) {
-    stdio_init_all();
     spi_init(oled_spi_port, 150'0000);
     uart_init(serial_uart_port, disp::DISP_UART_BAUDRATE);
-    uart_init(screen_uart_port, disp::DISP_UART_BAUDRATE);
+    stdio_uart_init_full(
+        screen_uart_port,
+        disp::DISP_UART_BAUDRATE,
+        disp::DISP_UART_TX_PIN,
+        disp::DISP_UART_RX_PIN
+    );
+    stdio_set_translate_crlf(&stdio_uart, false);
+    uart_set_translate_crlf(screen_uart_port, false);
 
     gpio_init(dbg::SERIAL_UART_TX_PIN);
     gpio_init(dbg::SERIAL_UART_RX_PIN);
@@ -75,9 +86,10 @@ void init_peripheral(
     gpio_set_function(disp::DISP_UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(disp::DISP_UART_RX_PIN, GPIO_FUNC_UART);
 
-    irq_set_exclusive_handler(UART1_IRQ, screen_irq_handler);
-    irq_set_priority(UART1_IRQ, PICO_LOWEST_IRQ_PRIORITY);
-    irq_set_enabled(UART1_IRQ, true);
+    const uint screen_uart_irq = UART_IRQ_NUM(screen_uart_port);
+    irq_set_exclusive_handler(screen_uart_irq, screen_irq_handler);
+    irq_set_priority(screen_uart_irq, PICO_LOWEST_IRQ_PRIORITY);
+    irq_set_enabled(screen_uart_irq, true);
     uart_set_irq_enables(screen_uart_port, true, false);
 }
 
@@ -200,7 +212,7 @@ static void handle_show_one_cycle(
         sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
     } else {
         constexpr char message[] = "No fundamental";
-        sc.send_text(message, sizeof(message) - 1);
+        sc.send_text(message);
     }
 }
 
@@ -211,7 +223,7 @@ static void handle_show_three_cycles(
         sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
     } else {
         constexpr char message[] = "No fundamental";
-        sc.send_text(message, sizeof(message) - 1);
+        sc.send_text(message);
     }
 }
 
@@ -247,13 +259,23 @@ static void handle_show_description(
         length,
         signal.v_rms * repeat_scale
     );
-    sc.send_text(description, length);
+    description[length] = '\0';
+    sc.send_text(description);
 }
 
 int main() {
     init_peripheral(oled_spi, screen_uart, serial_uart);
-    const char greet[] = "hello";
-    sc.send_text(greet, sizeof(greet));
+    sleep_ms(100);
+    const char greet[] = "Signal Anlalyser Set Up!\r\nWaiting For Data\r\n2026 G Solution";
+    sc.send_text(greet);
+
+    float greet_graph[512];
+    for(int i=0;i<512;i++){
+        greet_graph[i]=12*sin((double)(2*PI*i)/512);
+    }
+    sc.send_graph(greet_graph, 512);
+    sc.send_graph(greet_graph, 512);
+
 
     if (pio_set_gpio_base(adc_pio, adc::PIO_GPIO_BASE) != PICO_OK) {
         panic("cannot select ADC PIO GPIO window");
@@ -294,7 +316,7 @@ int main() {
         repeat_scale,
         signal_sum
     );
-
+    /** AAA
     uart_puts(serial_uart, "Spectrum Peak Count: ");
     const uint8_t component_count_character = static_cast<uint8_t>(
         '0' + signal_sum.component_count
@@ -325,6 +347,8 @@ int main() {
     uart_write_float(serial_uart, signal_sum.v_rms * repeat_scale);
     uart_puts(serial_uart, "\r\n");
     uart_tx_wait_blocking(serial_uart);
+
+    */
 
     handle_show_description(signal_sum, repeat_scale);
 

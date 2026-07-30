@@ -1,19 +1,15 @@
 #pragma once
-
 #include <cstdint>
-#include <hardware/uart.h>
 
 class Screen final {
 public:
-    explicit Screen(uart_inst_t *uart_port, uart_inst_t *debug_port);
+    Screen() = default;
     void send_graph(const float data[], uint16_t length);
-    void send_text(const char *text, uint8_t size);
+    void send_text(const char *text);
 
 private:
-    float stretch_ = 3.0f;
-    uart_inst_t *const uart_port_;
-    uart_inst_t *const debug_port_;
-    uint8_t offset_ = 128;
+    float stretch_ = 10.0f;
+    uint16_t offset_ = 250;
 };
 
 /*

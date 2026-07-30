@@ -88,7 +88,7 @@ pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/pio/read.pio)
 pico_generate_pio_header(wavegen ${CMAKE_CURRENT_LIST_DIR}/pio/ads8688.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(wavegen 0)
+pico_enable_stdio_uart(wavegen 1)
 pico_enable_stdio_usb(wavegen 0)
 
 # Add the standard library to the build
