@@ -60,6 +60,10 @@ add_executable(wavegen
         # ${CMAKE_CURRENT_LIST_DIR}/app/ad9959.cpp
         # ${CMAKE_CURRENT_LIST_DIR}/app/ads8688.cpp
         # ${CMAKE_CURRENT_LIST_DIR}/app/get_raw_adc9226.cpp
+
+        src/initialize.cpp
+        src/utility.cpp
+
         lib/tset2/src/display.cpp
         lib/st7789/src/driver_st7789.c
         lib/st7789/port/rp2350/driver_st7789_interface_rp2350.c

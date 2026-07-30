@@ -73,6 +73,12 @@ constexpr bool adc_unpack_otr(uint16_t raw) {
     return ((raw >> 13) & 1u) != 0;
 }
 
+namespace adc {
+    constexpr uint32_t BUFFER_SIZE = 65536;
+    constexpr float VOLT_CONVERT_CONSTANT = 0.002441406f;
+    constexpr float ZERO_DRIFT_COMPENSATE = -40.0f;
+};
+
 namespace screen {
     constexpr uint DISP_UART_TX_PIN = 8;
     constexpr uint DISP_UART_RX_PIN = 9;

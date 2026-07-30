@@ -1,19 +1,11 @@
-#include <math.h>
-#include <stddef.h>
-#include <stdint.h>
-
-#include <hardware/clocks.h>
-#include <hardware/dma.h>
-#include <hardware/gpio.h>
-#include <hardware/pio.h>
-#include <hardware/uart.h>
-#include <pico/stdlib.h>
-#include <pico/time.h>
-
 #include <arm_math.h>
 
-#include "definition.h"
-#include "init.h"
+#include <math.h>
+
+#include "definition.hpp"
+#include "initialize.hpp"
+#include "utility.hpp"
+
 #include "read.pio.h"
 
 constexpr uint32_t BUFFER_SIZE = 65536;
@@ -51,8 +43,6 @@ const auto uart_port = uart0;
 PIO const adc_pio = pio0;
 constexpr uint adc_sm = 0;
 
-constexpr float VOLT_CONVERT = 0.002441406;
-constexpr float ZERO_DRIFT_COMPENSATE = -40;
 static float32_t FIR_COEFFICIENTS[NUM_TAPS] = {
     1.45347682e-03f, 1.55048002e-03f, 1.73592519e-03f, 2.01724593e-03f,
     2.40052891e-03f, 2.89036140e-03f, 3.48970226e-03f, 4.19977897e-03f,
@@ -86,147 +76,6 @@ typedef struct {
     float power;
 } SpectrumPeak;
 
-// 提取出原始 12b ADC 数据。其中 OTR、CLK 被 discard
-static __force_inline uint16_t unpack_adc_code(uint16_t raw) {
-    const uint16_t d11_d6 =
-        static_cast<uint16_t>((raw & 0x1f80u) >> 1);
-    const uint16_t d5_d4 =
-        static_cast<uint16_t>(
-            ((raw & 0x0001u) << 5) |
-            ((raw & 0x0002u) << 3)
-        );
-    const uint16_t d3_d0 =
-        static_cast<uint16_t>((raw & 0x0078u) >> 3);
-    return static_cast<uint16_t>(d11_d6 | d5_d4 | d3_d0);
-}
-float compute_adc_voltage(int32_t raw) {
-    return (5.0f - VOLT_CONVERT * raw) * 1000 + ZERO_DRIFT_COMPENSATE; // metric: mV
-}
-
-float sample_clock_divider() {
-    constexpr float pio_cycle_per_sample = 2.0f;
-    return static_cast<float>(clock_get_hz(clk_sys)) / 
-        (ADC_TARGET_SAMPLE_RATE * pio_cycle_per_sample);
-}
-
-void pio_init(
-    PIO pio,
-    uint sm,
-    uint offset
-){
-    for (auto i : ADC_DATA_PINS) {
-        pio_gpio_init(pio, i);
-        gpio_disable_pulls(i);
-    }
-
-    pio_gpio_init(pio, ADC_OTR_PIN);
-    pio_gpio_init(pio, ADC_CLK_PIN);
-    gpio_disable_pulls(ADC_OTR_PIN);
-    gpio_disable_pulls(ADC_CLK_PIN);
-
-    auto cfg = read_program_get_default_config(offset);
-    sm_config_set_in_pins(&cfg, ADC_CAPTURE_BASE);
-    sm_config_set_in_pin_count(&cfg, ADC_CAPTURE_COUNT);
-    sm_config_set_sideset_pins(&cfg, ADC_CLK_PIN);
-    sm_config_set_in_shift(&cfg, false, true, ADC_CAPTURE_COUNT);
-    sm_config_set_clkdiv(&cfg, sample_clock_divider());
-
-    if (pio_sm_init(pio, sm, offset, &cfg) != PICO_OK) {
-        panic("cannot initialize ADC PIO state machine");
-    }
-    pio_sm_set_consecutive_pindirs(
-        pio, sm, ADC_CAPTURE_BASE, ADC_CAPTURE_COUNT, false
-    );
-    pio_sm_set_consecutive_pindirs(
-        pio, sm, ADC_CLK_PIN, 1, true
-    );
-    pio_sm_set_pins_with_mask64(
-        pio, sm, 0, 1ull << ADC_CLK_PIN
-    );
-}
-
-uint dma_init(
-    PIO pio,
-    uint sm,
-    uint16_t *arena_ptr,
-    size_t sample_count
-){
-    auto chan = dma_claim_unused_channel(true);
-    auto cfg = dma_channel_get_default_config(chan);
-
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-    channel_config_set_read_increment(&cfg, false);
-    channel_config_set_write_increment(&cfg, true);
-    channel_config_set_dreq(&cfg, pio_get_dreq(pio, sm, false));
-    channel_config_set_high_priority(&cfg, true);
-
-    dma_channel_configure(chan, &cfg,
-        arena_ptr,
-        &pio -> rxf[sm],
-        sample_count,
-        false
-    );
-
-    return chan;
-}
-
-uint8_t encode_float_to_string(float data, uint8_t *str) {
-    int index = 0;
-
-    if (data < 0.0f) {
-        str[index++] = '-';
-        data = -data;
-    }
-
-    uint32_t integer = static_cast<uint32_t>(data);
-    uint32_t fraction = static_cast<uint32_t>((data - integer) * 1000.0f);
-
-    char tmp[12];
-    int t = 0;
-
-    if (integer == 0) {
-        tmp[t++] = '0';
-    } else {
-        while (integer > 0) {
-            tmp[t++] = '0' + integer % 10;
-            integer /= 10;
-        }
-        for (int i = 0; i < t / 2; i++) {
-            char c = tmp[i];
-            tmp[i] = tmp[t - 1 - i];
-            tmp[t - 1 - i] = c;
-        }
-    }
-
-    for (int i = 0; i < t; i++) {
-        str[index++] = tmp[i];
-    }
-
-    str[index++] = '.';
-    str[index++] = '0' + (fraction / 100);
-    str[index++] = '0' + ((fraction / 10) % 10);
-    str[index++] = '0' + (fraction % 10);
-
-    return index;
-}
-
-void unpack_adc_buffer(uint16_t *buffer) {
-    for (uint32_t i = 0; i < BUFFER_SIZE; i++) {
-        buffer[i] = unpack_adc_code(buffer[i]);
-    }
-}
-
-static __force_inline uint32_t reflected_sample_index(int32_t index) {
-    if (index < 0) {
-        return static_cast<uint32_t>(-index - 1);
-    }
-    if (index >= static_cast<int32_t>(BUFFER_SIZE)) {
-        return static_cast<uint32_t>(
-            2 * static_cast<int32_t>(BUFFER_SIZE) - index - 1
-        );
-    }
-    return static_cast<uint32_t>(index);
-}
 
 static __force_inline uint16_t median_at(
     const uint16_t *samples,
