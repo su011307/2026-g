@@ -30,7 +30,7 @@ from scipy.fft import rfft, rfftfreq
 
 FREQUENCY_RESOLUTION_HZ = 500.0
 OUTPUT_ROOT = Path("~/develop/wavegen/res/data/test_data").expanduser()
-SAMPLE_RATE_HZ = 20_000_000.0
+SAMPLE_RATE_HZ = 65_000_000.0
 DURATION_S = 1.0 / FREQUENCY_RESOLUTION_HZ  # 2 ms
 CASE_IDS: tuple[str, ...] = ()  # Empty means all cases; e.g. ("G1-10", "G3-04")
 OVERWRITE = False
