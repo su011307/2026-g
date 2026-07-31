@@ -14,6 +14,7 @@ namespace adc {
     constexpr uint CLK_PIN = 28;
     constexpr uint OTR_PIN = 39;
     constexpr uint PIPELINE_DELAY = 7;
+    constexpr uint32_t STARTUP_DISCARD_SAMPLES = 256;
 
     // LSB -> MSB. reference.pdf中的走线并不是连续的逻辑位序
     // 注意 AD9226 的 LSB 和 MSB 与引脚的逆序关系
@@ -42,8 +43,8 @@ namespace dac {
 };
 
 namespace dbg {
-    constexpr uint SERIAL_UART_RX_PIN = 45;
-    constexpr uint SERIAL_UART_TX_PIN = 44;
+    constexpr uint SERIAL_UART_RX_PIN = 21;
+    constexpr uint SERIAL_UART_TX_PIN = 20;
 };
 
 namespace sig {
@@ -56,7 +57,7 @@ namespace sig {
     static_assert(SPECTRUM_SIZE <= PLOT_SIZE);
 
     namespace flt {
-        constexpr uint32_t MEDIAN_RADIUS = 7;
+        constexpr uint32_t MEDIAN_RADIUS = 6;
         constexpr uint32_t MEDIAN_WINDOW = 2 * MEDIAN_RADIUS + 1;
         constexpr uint32_t FIR_ORDER = 64;
         constexpr uint32_t NUM_TAPS = FIR_ORDER + 1;
@@ -121,7 +122,7 @@ namespace oled {
 };
 
 namespace disp {
-    constexpr uint DISP_UART_TX_PIN = 16;
-    constexpr uint DISP_UART_RX_PIN = 17;
+    constexpr uint DISP_UART_TX_PIN = 44;
+    constexpr uint DISP_UART_RX_PIN = 45;
     constexpr uint DISP_UART_BAUDRATE = 115200;
 };

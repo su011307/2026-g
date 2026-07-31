@@ -21,20 +21,25 @@
 
 #include "read.pio.h"
 
-// Centered median filter: radius 6 gives a 13-sample window.
-constexpr uint32_t REPEAT_TIME = 3;
+// An odd repeat count gives each scalar measurement a unique median.
+constexpr uint32_t REPEAT_TIME = 5;
 static_assert(REPEAT_TIME > 0);
+static_assert((REPEAT_TIME & 1u) == 1u);
 
 
 const auto oled_spi = spi0;
-const auto serial_uart = uart0;
+const auto serial_uart = uart1;
 const auto screen_uart = uart0;
 
 PIO const adc_pio = pio0;
 constexpr uint adc_sm = 0;
 
-static uint16_t RAW_BUFFER[sig::BUFFER_SIZE] = {};
+static uint16_t RAW_BUFFER[
+    adc::STARTUP_DISCARD_SAMPLES + sig::BUFFER_SIZE
+] = {};
 constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0]);
+static uint16_t *const ADC_BUFFER =
+    RAW_BUFFER + adc::STARTUP_DISCARD_SAMPLES;
 
 enum class WorkMode : uint8_t {
     ShowOneCycle,
@@ -61,6 +66,19 @@ static volatile bool data_available = false;
 
 static uint dma_chan;
 static uint adc_offset;
+
+static void insert_sorted_measurement(
+    float *measurements,
+    uint32_t sorted_count,
+    float value
+) {
+    uint32_t position = sorted_count;
+    while (position > 0 && measurements[position - 1] > value) {
+        measurements[position] = measurements[position - 1];
+        --position;
+    }
+    measurements[position] = value;
+}
 
 void __isr __not_in_flash_func(screen_irq_handler)();
 
@@ -264,9 +282,11 @@ int main() {
 
         switch (request) {
             case WorkMode::ShowOneCycle:
+                sc.send_text("1 req acc");
                 handle_show_cycles(true);
                 break;
             case WorkMode::ShowThreeCycle:
+                sc.send_text("3 req acc");
                 handle_show_cycles(false);
                 break;
         }
@@ -277,7 +297,8 @@ static SignalDescription perform_acquisition() {
     // 清空累积频谱
     reset_signal_analysis();
 
-    SignalDescription acc = {};
+    float v_pp_measurements[REPEAT_TIME] = {};
+    float v_rms_measurements[REPEAT_TIME] = {};
     for (uint32_t repeat = 0; repeat < REPEAT_TIME; ++repeat) {
         // ----- 启动 DMA 采样 -----
         pio_sm_clear_fifos(adc_pio, adc_sm);
@@ -289,18 +310,33 @@ static SignalDescription perform_acquisition() {
         pio_sm_set_enabled(adc_pio, adc_sm, false);
 
         // ----- 数据解包与信号分析 -----
-        unpack_adc_buffer(RAW_BUFFER);
-        const SignalDescription current = analyze_signal(RAW_BUFFER); // 内部填充 MEDIAN_BUFFER 并累加 SPECTRUM_SUM
-        acc.v_pp += current.v_pp;
-        acc.v_rms += current.v_rms;
+        // 前 256 点覆盖 ADC 流水线及停钟后的稳定时间，只处理后续
+        // 65536 个连续采样点。
+        unpack_adc_buffer(ADC_BUFFER);
+        const SignalDescription current = analyze_signal(ADC_BUFFER); // 内部填充 MEDIAN_BUFFER 并累加 SPECTRUM_SUM
+
+        // FIXME: 似乎每 9-10 次稳定出现一个离群值？
+        // 而且大部分采样点似乎稳定地高于实际 Vpp 约 10mV（离群值约 20mV）
+        insert_sorted_measurement(
+            v_pp_measurements,
+            repeat,
+            current.v_pp
+        );
+        insert_sorted_measurement(
+            v_rms_measurements,
+            repeat,
+            current.v_rms
+        );
     }
 
     // ----- 累积频谱分析 -----
     constexpr float repeat_scale =
         1.0f / static_cast<float>(REPEAT_TIME);
 
-    acc.v_pp *= repeat_scale;
-    acc.v_rms *= repeat_scale;
-    analyze_accumulated_spectrum(repeat_scale, acc);
-    return acc;
+    SignalDescription result = {};
+    result.v_pp = v_pp_measurements[REPEAT_TIME / 2];
+    result.v_rms = v_rms_measurements[REPEAT_TIME / 2];
+
+    analyze_accumulated_spectrum(repeat_scale, result);
+    return result;
 }

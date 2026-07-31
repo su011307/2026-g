@@ -629,6 +629,7 @@ void resample_spectrum(SignalPlot &plot) {
         last_bin = SPECTRUM_BIN_COUNT - 1;
     }
 
+    float minimum = INFINITY;
     float maximum = 0.0f;
     for (uint32_t i = 0; i < SPECTRUM_SIZE; ++i) {
         const float source_position =
@@ -647,16 +648,27 @@ void resample_spectrum(SignalPlot &plot) {
                 ? left_magnitude
                 : right_magnitude;
         plot.samples[i] = magnitude;
+        if (magnitude < minimum) {
+            minimum = magnitude;
+        }
         if (magnitude > maximum) {
             maximum = magnitude;
         }
     }
 
-    if (maximum <= 0.0f) {
+    const float magnitude_span = maximum - minimum;
+    if (magnitude_span <= 0.0f) {
         return;
     }
-    const float plot_scale = PLOT_VERTICAL_RANGE / maximum;
+
+    // Screen::send_graph1 applies a fixed positive offset after scaling by
+    // the input span. Centering the spectrum around zero keeps its peak below
+    // uint8_t saturation while retaining the complete display dynamic range.
+    const float plot_scale =
+        2.0f * PLOT_VERTICAL_RANGE / magnitude_span;
     for (uint32_t i = 0; i < SPECTRUM_SIZE; ++i) {
-        plot.samples[i] *= plot_scale;
+        plot.samples[i] =
+            (plot.samples[i] - minimum) * plot_scale -
+            PLOT_VERTICAL_RANGE;
     }
 }
