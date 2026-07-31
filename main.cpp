@@ -4,7 +4,6 @@
 #include <hardware/irq.h>
 #include <hardware/spi.h>
 #include <hardware/uart.h>
-#include <math.h>
 #include <pico/platform/compiler.h>
 #include <pico/platform/sections.h>
 #include <pico/stdio.h>
@@ -14,7 +13,6 @@
 
 #include "definition.hpp"
 #include "display.hpp"
-#include "dsp/fast_math_functions.h"
 #include "initialize.hpp"
 #include "signal.hpp"
 #include "utility.hpp"
@@ -202,7 +200,7 @@ static void send_brief_description(const SignalDescription &signal) {
     constexpr float repeat_scale = 1.0f;
 
     pos += snprintf(buffer + pos, sizeof(buffer) - pos, "Vpp= %.2f mV\r\nVrms= %.2f mv\r\n",
-                    signal.v_pp * repeat_scale,signal.v_rms); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
+                    signal.v_pp * repeat_scale ,signal.v_rms); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
 
     if (signal.component_count == 0) {
         snprintf(
@@ -283,8 +281,7 @@ static void clear() {
 
 static void handle_calibration() {
     // 从 ADC 读取若干个采样（如 15 个），然后计算出平均 Vpp 和目标 Vpp 的偏差，然后计算出输出 Vpp 时的校准量
-    // 出现这个情况，很可能是因为 max - min 算法，受 ADC 噪声影响。即便应用了中值滤波，也只能滤除大的尖峰，对于
-    // 小毛刺没有很好的处理办法。RMS 按 1.5 LSB
+    // 后续校准应作用于 FIR 增益补偿后的有效谱峰幅值。
 }
 
 static void dispatch_work_mode(WorkMode request) {
@@ -379,7 +376,6 @@ int main() {
 static SignalDescription perform_acquisition() {
     reset_signal_analysis();
 
-    SignalDescription result = {};
     for (uint32_t repeat = 0; repeat < REPEAT_TIME; ++repeat) {
         pio_sm_clear_fifos(adc_pio, adc_sm);
         dma_channel_set_write_addr(dma_chan, RAW_BUFFER, false);
@@ -390,17 +386,13 @@ static SignalDescription perform_acquisition() {
         pio_sm_set_enabled(adc_pio, adc_sm, false);
 
         unpack_adc_buffer(ADC_BUFFER);
-        const SignalDescription current = analyze_signal(ADC_BUFFER);
-        result.v_pp += current.v_pp;
-        result.v_rms += current.v_rms;
+        analyze_signal(ADC_BUFFER);
     }
 
     constexpr float repeat_scale =
         1.0f / static_cast<float>(REPEAT_TIME);
 
-    result.v_pp *= repeat_scale;
-    result.v_rms *= repeat_scale;
-
+    SignalDescription result = {};
     analyze_accumulated_spectrum(repeat_scale, result);
     return result;
 }

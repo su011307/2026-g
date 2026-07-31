@@ -24,86 +24,16 @@ static float FIR_BUFFER[FFT_SIZE] = {};
 static float FIR_STATE[NUM_TAPS + FIR_BLOCK_SIZE - 1] = {};
 static float SPECTRUM_SUM[SPECTRUM_BIN_COUNT] = {};
 static float SPECTRUM_SORT_SCRATCH[SPECTRUM_BIN_COUNT] = {};
-static uint16_t MEDIAN_BUFFER[BUFFER_SIZE] = {};
 static float SPECTRUM_WINDOW_ENBW_BINS = 1.0f;
 static constexpr float PLOT_VERTICAL_RANGE = 40.0f;
+static constexpr uint32_t FIR_STARTUP_SAMPLE_COUNT =
+    (NUM_TAPS - 1 + DECIMATION_FACTOR - 1) /
+    DECIMATION_FACTOR;
+static_assert(FIR_STARTUP_SAMPLE_COUNT < FFT_SIZE);
 
 void reset_signal_analysis() {
     for (uint32_t bin = 0; bin < SPECTRUM_BIN_COUNT; ++bin) {
         SPECTRUM_SUM[bin] = 0.0f;
-    }
-}
-
-static void sort_median_window(uint16_t *window) {
-    for (uint32_t i = 1; i < MEDIAN_WINDOW; ++i) {
-        const uint16_t value = window[i];
-        uint32_t position = i;
-        while (position > 0 && window[position - 1] > value) {
-            window[position] = window[position - 1];
-            --position;
-        }
-        window[position] = value;
-    }
-}
-
-static void replace_sorted_window_value(
-    uint16_t *window,
-    uint16_t outgoing,
-    uint16_t incoming
-) {
-    if (outgoing == incoming) {
-        return;
-    }
-
-    uint32_t position = 0;
-    while (window[position] != outgoing) {
-        ++position;
-    }
-
-    if (incoming < outgoing) {
-        while (position > 0 && window[position - 1] > incoming) {
-            window[position] = window[position - 1];
-            --position;
-        }
-    } else {
-        while (
-            position + 1 < MEDIAN_WINDOW &&
-            window[position + 1] < incoming
-        ) {
-            window[position] = window[position + 1];
-            ++position;
-        }
-    }
-    window[position] = incoming;
-}
-
-static void apply_median_filter(
-    const uint16_t *input,
-    uint16_t *output
-) {
-    uint16_t window[MEDIAN_WINDOW];
-    for (uint32_t i = 0; i < MEDIAN_WINDOW; ++i) {
-        const int32_t source_index =
-            static_cast<int32_t>(i) -
-            static_cast<int32_t>(MEDIAN_RADIUS);
-        window[i] = input[reflected_sample_index(source_index)];
-    }
-    sort_median_window(window);
-    output[0] = window[MEDIAN_RADIUS];
-
-    for (uint32_t center = 1; center < BUFFER_SIZE; ++center) {
-        const int32_t outgoing_index =
-            static_cast<int32_t>(center) -
-            static_cast<int32_t>(MEDIAN_RADIUS) - 1;
-        const int32_t incoming_index =
-            static_cast<int32_t>(center) +
-            static_cast<int32_t>(MEDIAN_RADIUS);
-        replace_sorted_window_value(
-            window,
-            input[reflected_sample_index(outgoing_index)],
-            input[reflected_sample_index(incoming_index)]
-        );
-        output[center] = window[MEDIAN_RADIUS];
     }
 }
 
@@ -270,6 +200,57 @@ static float estimate_component_amplitude_mv(
         : 0.0f;
 }
 
+static void infer_signal_metrics(SignalDescription &result) {
+    result.v_pp = 0.0f;
+    result.v_rms = 0.0f;
+    if (result.component_count == 0) {
+        return;
+    }
+
+    float amplitude_square_sum = 0.0f;
+    for (uint32_t i = 0; i < result.component_count; ++i) {
+        const float amplitude = result.component_amplitude[i];
+        amplitude_square_sum += amplitude * amplitude;
+    }
+    result.v_rms = sqrtf(0.5f * amplitude_square_sum);
+
+    constexpr uint32_t reconstruction_sample_count = 1024;
+    const float fundamental_frequency =
+        result.component_frequency[0];
+    float minimum = INFINITY;
+    float maximum = -INFINITY;
+    for (
+        uint32_t sample = 0;
+        sample < reconstruction_sample_count;
+        ++sample
+    ) {
+        const float base_phase =
+            2.0f * PI * static_cast<float>(sample) /
+            static_cast<float>(reconstruction_sample_count);
+        float voltage = 0.0f;
+        for (uint32_t i = 0; i < result.component_count; ++i) {
+            uint32_t harmonic = static_cast<uint32_t>(
+                roundf(
+                    result.component_frequency[i] /
+                    fundamental_frequency
+                )
+            );
+            if (harmonic == 0) {
+                harmonic = 1;
+            }
+            voltage += result.component_amplitude[i] *
+                sinf(base_phase * static_cast<float>(harmonic));
+        }
+        if (voltage < minimum) {
+            minimum = voltage;
+        }
+        if (voltage > maximum) {
+            maximum = voltage;
+        }
+    }
+    result.v_pp = maximum - minimum;
+}
+
 void analyze_accumulated_spectrum(
     float spectrum_scale,
     SignalDescription &result
@@ -397,47 +378,20 @@ void analyze_accumulated_spectrum(
         result.component_frequency[position] = frequency;
         result.component_amplitude[position] = amplitude;
     }
+
+    infer_signal_metrics(result);
 }
 
-SignalDescription analyze_signal(uint16_t *buffer) {
-    float min_voltage = 32768;
-    float max_voltage = -32768;
+void analyze_signal(uint16_t *buffer) {
     float voltage_sum = 0.0f;
-    float voltage_square_sum = 0.0;
-
-    // Since voltage conversion is monotonic, filtering ADC codes gives the
-    // same median as filtering the converted voltages.
-    apply_median_filter(buffer, MEDIAN_BUFFER);
-
     for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
-        const float voltage = compute_adc_voltage(
-            static_cast<int32_t>(MEDIAN_BUFFER[i])
+        voltage_sum += compute_adc_voltage(
+            static_cast<int32_t>(buffer[i])
         );
-        if (voltage < min_voltage) {
-            min_voltage = voltage;
-        }
-        if (voltage > max_voltage) {
-            max_voltage = voltage;
-        }
-        voltage_sum += voltage;
-        voltage_square_sum += voltage * voltage;
     }
-
-    SignalDescription result = {};
-    result.v_pp = max_voltage - min_voltage;
     const float mean_voltage =
         voltage_sum / static_cast<float>(BUFFER_SIZE);
-    float voltage_variance =
-        voltage_square_sum / static_cast<float>(BUFFER_SIZE) -
-        mean_voltage * mean_voltage;
-    if (voltage_variance < 0.0f) {
-        voltage_variance = 0.0f;
-    }
-    // The input is composed of AC fundamental/harmonic components. Removing
-    // ADC DC offset matches the notebook's spectrum-derived RMS.
-    result.v_rms = sqrtf(voltage_variance);
 
-    // Match the notebook's order: MedianFilter -> LowpassFilter -> FFT.
     arm_fir_decimate_instance_f32 fir = {};
     if (arm_fir_decimate_init_f32(
         &fir,
@@ -458,9 +412,7 @@ SignalDescription analyze_signal(uint16_t *buffer) {
     ) {
         for (uint32_t i = 0; i < FIR_BLOCK_SIZE; ++i) {
             FIR_INPUT[i] = compute_adc_voltage(
-                static_cast<int32_t>(
-                    MEDIAN_BUFFER[block_start + i]
-                )
+                static_cast<int32_t>(buffer[block_start + i])
             ) - mean_voltage;
         }
 
@@ -511,7 +463,6 @@ SignalDescription analyze_signal(uint16_t *buffer) {
         );
     }
 
-    return result;
 }
 
 static void clear_plot(SignalPlot &plot, uint16_t sample_count) {
@@ -554,11 +505,8 @@ bool find_wave(
     const float source_span = period_samples * cycle_count;
     const uint32_t source_span_ceil =
         static_cast<uint32_t>(ceilf(source_span));
-    constexpr uint32_t fir_startup_samples =
-        (NUM_TAPS - 1 + DECIMATION_FACTOR - 1) /
-        DECIMATION_FACTOR;
     if (
-        source_span_ceil + fir_startup_samples + 2 >= FFT_SIZE ||
+        source_span_ceil + FIR_STARTUP_SAMPLE_COUNT + 2 >= FFT_SIZE ||
         period_samples < 2.0f
     ) {
         return false;
@@ -568,7 +516,7 @@ bool find_wave(
     // in a fundamental period so every redraw has a deterministic phase.
     const uint32_t latest_start =
         FFT_SIZE - source_span_ceil - 2;
-    uint32_t start = fir_startup_samples;
+    uint32_t start = FIR_STARTUP_SAMPLE_COUNT;
     uint32_t search_end =
         start + static_cast<uint32_t>(ceilf(period_samples));
     if (search_end > latest_start) {

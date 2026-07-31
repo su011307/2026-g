@@ -1,5 +1,6 @@
 #include "utility.hpp"
-#include <hardware/uart.h>
+
+#include "definition.hpp"
 
 // 提取出原始 12b ADC 数据。其中 OTR、CLK 被 discard
 static uint16_t unpack_adc_code(uint16_t raw) {
@@ -19,54 +20,8 @@ float compute_adc_voltage(int32_t raw) {
     return (5.0f - adc::VOLT_CONVERT_CONSTANT * raw) * 1000 + adc::ZERO_DRIFT_COMPENSATE; // metric: mV
 }
 
-uint8_t encode_float_to_string(float data, uint8_t *str) {
-    int index = 0;
-
-    if (data < 0.0f) {
-        str[index++] = '-';
-        data = -data;
-    }
-
-    uint32_t integer = static_cast<uint32_t>(data);
-    uint32_t fraction = static_cast<uint32_t>((data - integer) * 1000.0f);
-
-    char tmp[12];
-    int t = 0;
-
-    if (integer == 0) {
-        tmp[t++] = '0';
-    } else {
-        while (integer > 0) {
-            tmp[t++] = '0' + integer % 10;
-            integer /= 10;
-        }
-        for (int i = 0; i < t / 2; i++) {
-            char c = tmp[i];
-            tmp[i] = tmp[t - 1 - i];
-            tmp[t - 1 - i] = c;
-        }
-    }
-
-    for (int i = 0; i < t; i++) {
-        str[index++] = tmp[i];
-    }
-
-    str[index++] = '.';
-    str[index++] = '0' + (fraction / 100);
-    str[index++] = '0' + ((fraction / 10) % 10);
-    str[index++] = '0' + (fraction % 10);
-
-    return index;
-}
-
 void unpack_adc_buffer(uint16_t *buffer) {
     for (uint32_t i = 0; i < sig::BUFFER_SIZE; i++) {
         buffer[i] = unpack_adc_code(buffer[i]);
     }
-}
-
-void uart_write_float(uart_inst_t *const uart_port, float value) {
-    uint8_t uart_buf[16] = {};
-    const uint8_t size = encode_float_to_string(value, uart_buf);
-    uart_write_blocking(uart_port, uart_buf, size);
 }

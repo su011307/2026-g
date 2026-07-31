@@ -57,8 +57,6 @@ namespace sig {
     static_assert(SPECTRUM_SIZE <= PLOT_SIZE);
 
     namespace flt {
-        constexpr uint32_t MEDIAN_RADIUS = 6;
-        constexpr uint32_t MEDIAN_WINDOW = 2 * MEDIAN_RADIUS + 1;
         constexpr uint32_t FIR_ORDER = 64;
         constexpr uint32_t NUM_TAPS = FIR_ORDER + 1;
         constexpr uint32_t FIR_BLOCK_SIZE = 256;
@@ -105,8 +103,6 @@ namespace sig {
     static_assert((fft::FFT_SIZE & (fft::FFT_SIZE - 1)) == 0);
     static_assert(BUFFER_SIZE % flt::FIR_BLOCK_SIZE == 0);
     static_assert(flt::FIR_BLOCK_SIZE % fft::DECIMATION_FACTOR == 0);
-    static_assert((flt::MEDIAN_WINDOW & 1u) == 1u);
-    static_assert(BUFFER_SIZE >= flt::MEDIAN_WINDOW);
 };
 
 namespace oled {

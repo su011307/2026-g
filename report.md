@@ -28,24 +28,24 @@ flowchart TD
             task_queue --"拉取"--> dispatch
 
             subgraph "信号处理"
-                median("中值滤波")
-                med_buf[("缓冲区")]
+                unpack("ADC 数据解包")
+                dc("电压换算与去直流")
+                fir("65 抽头 FIR 低通与 16 倍抽取")
                 fir_buf[("缓冲区")]
-                fir("FIR 滤波器")
-                voltage("计算电压信息")
-                fft("FFT")
-                spectrum("频谱分析")
+                window("Blackman-Harris 窗")
+                fft("4096 点 RFFT")
+                spectrum("累积频谱与有效谱峰分析")
+                compensate("FIR 增益补偿")
+                voltage("由谱峰推算 Vpp、Vrms")
 
-                buffer --"拉取"--> median
-                buffer --"拉取"--> fir
-                median --"推送"--> med_buf
-                fir --"推送"--> fir_buf
-                med_buf --> voltage
-                fir_buf --> fft
-                fft --> spectrum
-                
-                voltage --> display
-                spectrum --> display
+                buffer --"拉取"--> unpack
+                unpack --> dc --> fir --> fir_buf
+                fir_buf --> window --> fft --> spectrum --> compensate
+
+                fir_buf --"1/3 周期波形"--> display
+                spectrum --"频谱图"--> display
+                compensate --"频率与幅值"--> display
+                compensate --> voltage --> display
             end
         end
     end
@@ -57,29 +57,110 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    adc("ADC 读取")
-    median("中值滤波")
-    lowpass("低通滤波")
-    fft("FFT")
+    adc[("ADC 数据")]
 
-    voltage("电压分析")
-    spectrum("频谱分析")
+    subgraph "处理"
+        lowpass("低通滤波")
+        fft("FFT")
+        compensate("补偿增益")
+    end
 
-    output("输出显示")
+    output(("输出"))
 
-    adc --> median -->|去除毛刺| voltage --> output
-
-    adc --> lowpass --> |去除高频噪声| fft --> spectrum --> output
+    adc --> |解算| lowpass --> |去噪| fft --> |频谱分析| compensate --> |频谱| output
+    lowpass --> |波形| output
+    compensate --> |电压| output
 ```
 
-## signal
+## signal processing
 
 ```mermaid
-flowchart LR
-    signal("过滤后信号")
-    window("Blackman 窗")
-    fft("FFT")
-    spectrum("频谱")
+flowchart TD
+    adc("并行采样")
+    reset("清空 SPECTRUM_SUM")
 
-    signal --> window --> fft --> spectrum
+    reset --> adc
+
+    subgraph "采样任务"
+        mean("去除直流分量")
+        fir_buffer[("FIR_BUFFER")]
+        window("Blackman 窗")
+        magnitude["频谱"]
+        spectrum_sum[("SPECTRUM_SUM")]
+        repeat_done{"已完成 5 次？"}
+
+        mean --> |FIR 低通| fir_buffer
+        fir_buffer --> window --> |FFT| magnitude --> |累加| spectrum_sum
+        spectrum_sum --> repeat_done
+    end
+
+    repeat_done --"否"--> adc
+    repeat_done --"是，乘 1/5"--> peak_range
+
+    subgraph "谱峰"
+        candidates("搜索极大值")
+        noise_floor("估计噪声")
+        threshold("过滤")
+        amplitude["积分峰值附近正负 4 个频点<br/>按窗函数 ENBW 修正幅值"]
+        fir_gain["计算 FIR 在谱峰频率处的增益"]
+        compensate["幅值除以 FIR 增益<br/>补偿通带损失"]
+        sort["最多保留 3 个有效分量<br/>按频率升序排列"]
+
+        candidates --> noise_floor --> threshold
+        candidates --> fir_gain
+        candidates --> amplitude
+        amplitude --> compensate
+        fir_gain --> compensate
+        threshold --> compensate
+        compensate --> sort
+    end
+
+    subgraph "参数反解算"
+        vrms["Vrms = sqrt(sum(Ai^2) / 2)"]
+        reconstruct["按基波与整数次谐波<br/>同相正弦重建一个周期"]
+        vpp["Vpp = max(u_hat) - min(u_hat)"]
+
+        sort --> vrms
+        sort --> reconstruct --> vpp
+    end
+
+    subgraph "波形分支"
+        last_fir["保留最后一次 FIR_BUFFER"]
+        skip["跳过 FIR 启动瞬态"]
+        fundamental["使用最低有效谱峰作为基频"]
+        phase_align["在首个基波周期内定位波峰"]
+        cycle["截取完整周期"]
+        intp["线性插值"]
+        wave_screen["串口屏时域波形控件"]
+
+        fir_buffer -.->|"最后一次采集"| last_fir
+        last_fir --> skip --> phase_align --> cycle --> intp --> wave_screen
+        sort --> fundamental --> phase_align
+    end
+
+    subgraph "频谱图"
+        resample("映射 0–500 kHz 至 512 点")
+        normalize("归一化")
+        spectrum_screen("串口屏")
+
+        spectrum_sum --> resample --> normalize --> spectrum_screen
+    end
+
+    vrms --> parameter_screen["串口屏参数区"]
+    vpp --> parameter_screen
+    sort --> component_screen["串口屏谱峰频率 / 幅值区"]
+```
+
+##  challenge
+```mermaid
+flowchart TD
+    massive(("大量数据"))
+
+    conc("高吞吐")
+    stable("数值稳定")
+    lag("低延迟")
+
+    massive ==> conc
+    massive ==> lag
+    massive ==> stable
 ```

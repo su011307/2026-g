@@ -21,7 +21,7 @@ OUTPUT_PATH = (
     Path(__file__).resolve().parents[1]
     / "res"
     / "image"
-    / "fir_gain_10khz_to_1mhz.png"
+    / "fir_gain.png"
 )
 
 
