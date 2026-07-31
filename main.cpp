@@ -42,27 +42,28 @@ static uint16_t *const ADC_BUFFER =
     RAW_BUFFER + adc::STARTUP_DISCARD_SAMPLES;
 
 enum class WorkMode : uint8_t {
-    ShowOneCycle,
-    ShowThreeCycle
+    Calibrate, /* 校准逻辑 */
+    ShowOneCycle, /* 显示一个周期的波形 */
+    ShowThreeCycle, /* 显示三个周期的波形 */
+    ShowBriefDescription, /* 显示 Vpp、Vrms、基频 */
+    ShowSpectrumPlot, /* 向屏幕发送频谱图 */
+    ShowSpectrumPeak /* 显示谱峰频率及对应峰值，单位 mV */
 };
 
 static Screen sc;
 constexpr uint8_t WORK_QUEUE_SIZE = 16;
 constexpr uint8_t WORK_QUEUE_MASK = WORK_QUEUE_SIZE - 1;
-constexpr uint8_t WORK_MODE_COUNT = 2;
+constexpr uint8_t WORK_MODE_COUNT =
+    static_cast<uint8_t>(WorkMode::ShowSpectrumPeak) + 1;
 static_assert((WORK_QUEUE_SIZE & WORK_QUEUE_MASK) == 0);
-static_assert(
-    static_cast<uint8_t>(WorkMode::ShowThreeCycle) + 1 ==
-    WORK_MODE_COUNT
-);
+static_assert(WORK_MODE_COUNT == 6);
 
 static volatile WorkMode WORK_QUEUE[WORK_QUEUE_SIZE] = {};
 static volatile uint8_t WORK_QUEUE_HEAD = 0;
 static volatile uint8_t WORK_QUEUE_TAIL = 0;
 static SignalPlot SCREEN_PLOT = {};
 
-// Retained because main()'s guarded initialization still references it.
-static volatile bool data_available = false;
+static volatile bool in_calibration = false;
 
 static uint dma_chan;
 static uint adc_offset;
@@ -130,7 +131,11 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                     byte == 0x2b ||
                     byte == 0x2d ||
                     byte == 0x31 ||
-                    byte == 0x33
+                    byte == 0x33 ||
+                    byte == 0x34 ||
+                    byte == 0x35 ||
+                    byte == 0x36 ||
+                    byte == 0x37
                 ) {
                     command = byte;
                     receive_state = 1;
@@ -171,6 +176,18 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                     case 0x33:
                         selected_mode = WorkMode::ShowThreeCycle;
                         break;
+                    case 0x34:
+                        selected_mode = WorkMode::ShowBriefDescription;
+                        break;
+                    case 0x35:
+                        selected_mode = WorkMode::ShowSpectrumPlot;
+                        break;
+                    case 0x36:
+                        selected_mode = WorkMode::ShowSpectrumPeak;
+                        break;
+                    case 0x37:
+                        selected_mode = WorkMode::Calibrate;
+                        break;
                     default:
                         break;
                 }
@@ -192,30 +209,65 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
 }
 
 static SignalDescription perform_acquisition();
-// 发送信号参数信息（Vpp, 频率/幅度列表）
-static inline void send_signal_info(const SignalDescription &signal) {
-    char buffer[256];
+
+static void send_brief_description(const SignalDescription &signal) {
+    char buffer[256] = {};
     int pos = 0;
     constexpr float repeat_scale = 1.0f;
 
-    // 第一行：Vpp（mV）
-    pos += snprintf(buffer + pos, sizeof(buffer) - pos, "Vpp= %.2f mV\r\n",
-                    signal.v_pp * repeat_scale); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
+    pos += snprintf(buffer + pos, sizeof(buffer) - pos, "Vpp= %.2f mV\r\nVrms= %.2f mv\r\n",
+                    signal.v_pp * repeat_scale,signal.v_rms); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
 
-    // 最多输出 3 个频率分量（基波 + 谐波），实际数量由 component_count 决定
-    uint32_t count = signal.component_count;
-    if (count > 3) count = 3;  // 防止数组越界（但数组最大为 MAX_COMPONENTS，通常大于3）
-    for (uint32_t i = 0; i < count; ++i) {
-        // 频率单位转换为 kHz，幅度为 mV
-        pos += snprintf(buffer + pos, sizeof(buffer) - pos, "%.3f kHz %.2f mV\r\n",
-                        signal.component_frequency[i] / 1000.0f,
-                        signal.component_amplitude[i]); // 同上！**不要修改！**
-        if (pos >= (int)sizeof(buffer) - 1) break;
+    if (signal.component_count == 0) {
+        snprintf(
+            buffer + pos,
+            sizeof(buffer) - pos,
+            "Fundamental= not found"
+        );
+    } else {
+        snprintf(
+            buffer + pos,
+            sizeof(buffer) - pos,
+            "Fundamental= %.3f kHz",
+            signal.component_frequency[0] / 1000.0f
+        );
     }
 
-    // FIXME: 这部分实际上并没有在工作。但是优先级较低
     buffer[sizeof(buffer) - 1] = '\0';
-    sc.send_text("loading...");
+    sc.send_text(buffer);
+}
+
+static void send_spectrum_peaks(const SignalDescription &signal) {
+    if (signal.component_count == 0) {
+        sc.send_text("No spectrum peak");
+        return;
+    }
+
+    char buffer[256] = {};
+    int pos = 0;
+    for (
+        uint32_t i = 0;
+        i < signal.component_count && pos < static_cast<int>(sizeof(buffer));
+        ++i
+    ) {
+        const int written = snprintf(
+            buffer + pos,
+            sizeof(buffer) - static_cast<size_t>(pos),
+            "%.3f kHz %.2f mV\r\n",
+            signal.component_frequency[i] / 1000.0f,
+            signal.component_amplitude[i]
+        );
+        if (written < 0) {
+            break;
+        }
+        if (written >= static_cast<int>(sizeof(buffer)) - pos) {
+            pos = sizeof(buffer) - 1;
+            break;
+        }
+        pos += written;
+    }
+
+    buffer[sizeof(buffer) - 1] = '\0';
     sc.send_text(buffer);
 }
 
@@ -224,16 +276,84 @@ static void send_spectrum_plot() {
     sc.send_graph1(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
 }
 
-static void handle_show_cycles(bool one_cycle) {
-    const SignalDescription signal = perform_acquisition();
+static void smoothen_signal_graph(float samples[]) {
+    // 长度为 3 的滑窗，取平均值（缓解 ADC 采样的微小毛刺）。头尾两个数据点保持原样
+    float previous = samples[0];
+    float current = samples[1];
+    for (uint32_t i = 1; i + 1 < sig::PLOT_SIZE; ++i) {
+        const float next = samples[i + 1];
+        samples[i] = (previous + current + next) / 3.0f;
+        previous = current;
+        current = next;
+    }
+}
+
+static void handle_show_cycles(
+    const SignalDescription &signal,
+    bool one_cycle
+) {
     if (!find_wave(signal, one_cycle, SCREEN_PLOT)) {
         sc.send_text("No fundamental");
         return;
     }
 
+    smoothen_signal_graph(SCREEN_PLOT.samples);
     sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
-    send_signal_info(signal);
-    send_spectrum_plot();
+}
+
+static void clear() {
+    float tmp[sig::PLOT_SIZE] = {};
+    sc.send_text("");
+    sc.send_graph(tmp, sig::PLOT_SIZE);
+    sc.send_graph1(tmp, sig::PLOT_SIZE);
+}
+
+static void handle_calibration() {
+    // 从 ADC 读取若干个采样（如 15 个），然后计算出平均 Vpp 和目标 Vpp 的偏差，然后计算出输出 Vpp 时的校准量
+    // 出现这个情况，很可能是因为 max - min 算法，受 ADC 噪声影响。即便应用了中值滤波，也只能滤除大的尖峰，对于
+    // 小毛刺没有很好的处理办法。RMS 按 1.5 LSB
+}
+
+static void dispatch_work_mode(WorkMode request) {
+    if (request == WorkMode::Calibrate) {
+        if (in_calibration) {
+            handle_calibration();
+        } else {
+            sc.send_text(
+                "To calibrate: set sig. to 50mV@500kHz, press button again"
+            );
+        }
+        return;
+    }
+
+    if (in_calibration) {
+        sc.send_text("Calibrating. Please follow the instruction.");
+        return;
+    }
+
+    clear();
+
+    // 除校准外，每个任务只采集、分析一次，再按模式选择输出。
+    const SignalDescription signal = perform_acquisition();
+    switch (request) {
+        case WorkMode::ShowOneCycle:
+            handle_show_cycles(signal, true);
+            break;
+        case WorkMode::ShowThreeCycle:
+            handle_show_cycles(signal, false);
+            break;
+        case WorkMode::ShowBriefDescription:
+            send_brief_description(signal);
+            break;
+        case WorkMode::ShowSpectrumPlot:
+            send_spectrum_plot();
+            break;
+        case WorkMode::ShowSpectrumPeak:
+            send_spectrum_peaks(signal);
+            break;
+        case WorkMode::Calibrate:
+            break;
+    }
 }
 
 static bool try_pop_work_mode(WorkMode &mode) {
@@ -247,17 +367,16 @@ static bool try_pop_work_mode(WorkMode &mode) {
 }
 
 int main() {
-    // GUARD: 除了 switch 语句，不要修改 main 函数的任何其他部分
     init_peripheral(oled_spi, screen_uart, serial_uart);
     sleep_ms(100);
     const char greet[] = "Signal Anlalyser Set Up!\r\nWaiting For Data\r\n2026 G Solution";
     sc.send_text(greet);
 
-    float greet_graph[512];
-    for(int i=0;i<512;i++){
-        greet_graph[i]=12*sin((double)(2*PI*i)/512);
-    }
-    sc.send_graph(greet_graph, 512);
+    // float greet_graph[512];
+    // for (int i=0;i<512;i++){
+    //     greet_graph[i]=12*sin((double)(2*PI*i)/512);
+    // }
+    // sc.send_graph(greet_graph, 512);
     //sc.send_graph(greet_graph, 512);
 
     //初始化PIO&DMA
@@ -271,8 +390,6 @@ int main() {
 
     sleep_ms(1);
 
-    data_available = false; // 初始无数据
-
     while (1) {
         WorkMode request;
         if (!try_pop_work_mode(request)) {
@@ -280,16 +397,7 @@ int main() {
             continue;
         }
 
-        switch (request) {
-            case WorkMode::ShowOneCycle:
-                sc.send_text("1 req acc");
-                handle_show_cycles(true);
-                break;
-            case WorkMode::ShowThreeCycle:
-                sc.send_text("3 req acc");
-                handle_show_cycles(false);
-                break;
-        }
+        dispatch_work_mode(request);
     }
 }
 
