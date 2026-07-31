@@ -1,5 +1,5 @@
-#include <cstdint>
-#include <cstdio>
+#include <stdio.h>
+#include <stdint.h>
 #include <hardware/gpio.h>
 #include <hardware/irq.h>
 #include <hardware/spi.h>
@@ -271,9 +271,9 @@ static void send_spectrum_peaks(const SignalDescription &signal) {
     sc.send_text(buffer);
 }
 
-static void send_spectrum_plot() {
-    resample_spectrum(SCREEN_PLOT);
-    sc.send_graph1(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+static void send_spectrum_plot(SignalPlot &plot) {
+    resample_spectrum(plot);
+    sc.send_spectrum_plot(plot.samples, plot.sample_count);
 }
 
 static void smoothen_signal_graph(float samples[]) {
@@ -298,14 +298,14 @@ static void handle_show_cycles(
     }
 
     smoothen_signal_graph(SCREEN_PLOT.samples);
-    sc.send_graph(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
+    sc.send_wave_plot(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
 }
 
 static void clear() {
     float tmp[sig::PLOT_SIZE] = {};
-    sc.send_text("");
-    sc.send_graph(tmp, sig::PLOT_SIZE);
-    sc.send_graph1(tmp, sig::PLOT_SIZE);
+    sc.send_text("Ready");
+    sc.send_wave_plot(tmp, sig::PLOT_SIZE);
+    sc.send_spectrum_plot(tmp, sig::PLOT_SIZE);
 }
 
 static void handle_calibration() {
@@ -346,7 +346,7 @@ static void dispatch_work_mode(WorkMode request) {
             send_brief_description(signal);
             break;
         case WorkMode::ShowSpectrumPlot:
-            send_spectrum_plot();
+            send_spectrum_plot(SCREEN_PLOT);
             break;
         case WorkMode::ShowSpectrumPeak:
             send_spectrum_peaks(signal);
@@ -372,12 +372,7 @@ int main() {
     const char greet[] = "Signal Anlalyser Set Up!\r\nWaiting For Data\r\n2026 G Solution";
     sc.send_text(greet);
 
-    // float greet_graph[512];
-    // for (int i=0;i<512;i++){
-    //     greet_graph[i]=12*sin((double)(2*PI*i)/512);
-    // }
-    // sc.send_graph(greet_graph, 512);
-    //sc.send_graph(greet_graph, 512);
+    clear();
 
     //初始化PIO&DMA
     if (pio_set_gpio_base(adc_pio, adc::PIO_GPIO_BASE) != PICO_OK) {

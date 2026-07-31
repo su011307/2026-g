@@ -5,7 +5,10 @@
 
 #include "display.hpp"
 
-void Screen::send_graph(const float data[], uint16_t length) {
+void Screen::send_wave_plot(
+    const float data[], 
+    uint16_t length
+) {
     float min=600,max=0;
     for (uint16_t i = 0; i < length; i++){
         if(min>data[i]) min=data[i];
@@ -23,7 +26,10 @@ void Screen::send_graph(const float data[], uint16_t length) {
     printf("\x01\xff\xff\xff");
 }
 
-void Screen::send_graph1(const float data[], uint16_t length) {
+void Screen::send_spectrum_plot(
+    const float data[],
+    uint16_t length
+) {
     float min=600,max=0;
     for (uint16_t i = 0; i < length; i++){
         if(min>data[i]) min=data[i];

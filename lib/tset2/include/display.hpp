@@ -1,11 +1,14 @@
 #pragma once
-#include <cstdint>
+#include <stdint.h>
 
 class Screen final {
 public:
     Screen() = default;
-    void send_graph(const float data[], uint16_t length);
-    void send_graph1(const float data[], uint16_t length);
+    void send_wave_plot(const float data[], uint16_t length);
+    void send_spectrum_plot(
+        const float data[],
+        uint16_t length
+    );
     void send_text(const char *text);
     void send_graph_with_step(const float data[], uint16_t length, uint16_t step);
 
