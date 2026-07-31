@@ -20,6 +20,7 @@ static float FFT_INPUT[FFT_SIZE] = {};
 static float FFT_OUTPUT[FFT_SIZE] = {};
 static float FIR_INPUT[FIR_BLOCK_SIZE] = {};
 static float FIR_OUTPUT[FIR_BLOCK_SIZE / DECIMATION_FACTOR] = {};
+static float FIR_BUFFER[FFT_SIZE] = {};
 static float FIR_STATE[NUM_TAPS + FIR_BLOCK_SIZE - 1] = {};
 static float SPECTRUM_SUM[SPECTRUM_BIN_COUNT] = {};
 static float SPECTRUM_SORT_SCRATCH[SPECTRUM_BIN_COUNT] = {};
@@ -449,7 +450,7 @@ SignalDescription analyze_signal(uint16_t *buffer) {
         panic("cannot initialize FIR decimator");
     }
 
-    uint32_t fft_input_index = 0;
+    uint32_t fir_output_index = 0;
     for (
         uint32_t block_start = 0;
         block_start < BUFFER_SIZE;
@@ -473,7 +474,7 @@ SignalDescription analyze_signal(uint16_t *buffer) {
         for (uint32_t i = 0;
              i < FIR_BLOCK_SIZE / DECIMATION_FACTOR;
              ++i) {
-            FFT_INPUT[fft_input_index++] = FIR_OUTPUT[i];
+            FIR_BUFFER[fir_output_index++] = FIR_OUTPUT[i];
         }
     }
 
@@ -486,7 +487,7 @@ SignalDescription analyze_signal(uint16_t *buffer) {
         const float window = FFT_OUTPUT[i];
         window_sum += window;
         window_square_sum += window * window;
-        FFT_INPUT[i] *= window;
+        FFT_INPUT[i] = FIR_BUFFER[i] * window;
     }
     SPECTRUM_WINDOW_ENBW_BINS =
         static_cast<float>(FFT_SIZE) *
@@ -520,14 +521,14 @@ static void clear_plot(SignalPlot &plot, uint16_t sample_count) {
     }
 }
 
-static float interpolated_median_voltage(float sample_index) {
+static float interpolated_fir_voltage(float sample_index) {
     uint32_t left = static_cast<uint32_t>(sample_index);
-    if (left >= BUFFER_SIZE - 1) {
-        left = BUFFER_SIZE - 2;
+    if (left >= FFT_SIZE - 1) {
+        left = FFT_SIZE - 2;
     }
     const float fraction = sample_index - static_cast<float>(left);
-    const float left_voltage = compute_adc_voltage(MEDIAN_BUFFER[left]);
-    const float right_voltage = compute_adc_voltage(MEDIAN_BUFFER[left + 1]);
+    const float left_voltage = FIR_BUFFER[left];
+    const float right_voltage = FIR_BUFFER[left + 1];
     return left_voltage + fraction * (right_voltage - left_voltage);
 }
 
@@ -544,45 +545,49 @@ bool find_wave(
         return false;
     }
 
+    const float filtered_sample_rate =
+        adc::TARGET_SAMPLE_RATE /
+        static_cast<float>(DECIMATION_FACTOR);
     const float period_samples =
-        adc::TARGET_SAMPLE_RATE / signal.component_frequency[0];
+        filtered_sample_rate / signal.component_frequency[0];
     const float cycle_count = one_wave ? 1.0f : 3.0f;
     const float source_span = period_samples * cycle_count;
     const uint32_t source_span_ceil =
         static_cast<uint32_t>(ceilf(source_span));
+    constexpr uint32_t fir_startup_samples =
+        (NUM_TAPS - 1 + DECIMATION_FACTOR - 1) /
+        DECIMATION_FACTOR;
     if (
-        source_span_ceil + MEDIAN_RADIUS + 2 >= BUFFER_SIZE ||
+        source_span_ceil + fir_startup_samples + 2 >= FFT_SIZE ||
         period_samples < 2.0f
     ) {
         return false;
     }
 
-    // Start at the first voltage maximum in a fundamental period. This gives
-    // every redraw a deterministic phase without exposing the median buffer.
+    // Skip the FIR startup transient, then start at the first voltage maximum
+    // in a fundamental period so every redraw has a deterministic phase.
     const uint32_t latest_start =
-        BUFFER_SIZE - source_span_ceil - 2;
-    uint32_t start = MEDIAN_RADIUS;
+        FFT_SIZE - source_span_ceil - 2;
+    uint32_t start = fir_startup_samples;
     uint32_t search_end =
         start + static_cast<uint32_t>(ceilf(period_samples));
     if (search_end > latest_start) {
         search_end = latest_start;
     }
     for (uint32_t i = start + 1; i <= search_end; ++i) {
-        // ADC conversion is descending, so the smallest code is the maximum
-        // voltage.
-        if (MEDIAN_BUFFER[i] < MEDIAN_BUFFER[start]) {
+        if (FIR_BUFFER[i] > FIR_BUFFER[start]) {
             start = i;
         }
     }
 
-    float min_voltage = interpolated_median_voltage(
+    float min_voltage = interpolated_fir_voltage(
         static_cast<float>(start)
     );
     float max_voltage = min_voltage;
     const uint32_t last_source_sample =
         start + source_span_ceil + 1;
     for (uint32_t i = start + 1; i <= last_source_sample; ++i) {
-        const float voltage = compute_adc_voltage(MEDIAN_BUFFER[i]);
+        const float voltage = FIR_BUFFER[i];
         if (voltage < min_voltage) {
             min_voltage = voltage;
         }
@@ -595,24 +600,13 @@ bool find_wave(
     if (voltage_span <= 1.0e-6f) {
         return false;
     }
-    const float center_voltage = 0.5f * (min_voltage + max_voltage);
-    const float plot_scale =
-        2.0f * PLOT_VERTICAL_RANGE / voltage_span;
 
     for (uint32_t i = 0; i < PLOT_SIZE; ++i) {
         const float position =
             static_cast<float>(start) +
             source_span * static_cast<float>(i) /
                 static_cast<float>(PLOT_SIZE - 1);
-        float value =
-            (interpolated_median_voltage(position) - center_voltage) *
-            plot_scale;
-        if (value < -PLOT_VERTICAL_RANGE) {
-            value = -PLOT_VERTICAL_RANGE;
-        } else if (value > PLOT_VERTICAL_RANGE) {
-            value = PLOT_VERTICAL_RANGE;
-        }
-        plot.samples[i] = value;
+        plot.samples[i] = interpolated_fir_voltage(position);
     }
     return true;
 }

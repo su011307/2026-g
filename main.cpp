@@ -21,10 +21,9 @@
 
 #include "read.pio.h"
 
-// An odd repeat count gives each scalar measurement a unique median.
+// Average each scalar measurement across repeated acquisitions.
 constexpr uint32_t REPEAT_TIME = 5;
 static_assert(REPEAT_TIME > 0);
-static_assert((REPEAT_TIME & 1u) == 1u);
 
 
 const auto oled_spi = spi0;
@@ -67,19 +66,6 @@ static volatile bool in_calibration = false;
 
 static uint dma_chan;
 static uint adc_offset;
-
-static void insert_sorted_measurement(
-    float *measurements,
-    uint32_t sorted_count,
-    float value
-) {
-    uint32_t position = sorted_count;
-    while (position > 0 && measurements[position - 1] > value) {
-        measurements[position] = measurements[position - 1];
-        --position;
-    }
-    measurements[position] = value;
-}
 
 void __isr __not_in_flash_func(screen_irq_handler)();
 
@@ -276,34 +262,21 @@ static void send_spectrum_plot(SignalPlot &plot) {
     sc.send_spectrum_plot(plot.samples, plot.sample_count);
 }
 
-static void smoothen_signal_graph(float samples[]) {
-    // 长度为 3 的滑窗，取平均值（缓解 ADC 采样的微小毛刺）。头尾两个数据点保持原样
-    float previous = samples[0];
-    float current = samples[1];
-    for (uint32_t i = 1; i + 1 < sig::PLOT_SIZE; ++i) {
-        const float next = samples[i + 1];
-        samples[i] = (previous + current + next) / 3.0f;
-        previous = current;
-        current = next;
-    }
-}
-
 static void handle_show_cycles(
     const SignalDescription &signal,
     bool one_cycle
 ) {
     if (!find_wave(signal, one_cycle, SCREEN_PLOT)) {
-        sc.send_text("No fundamental");
+        sc.send_text("No fundamental found");
         return;
     }
 
-    smoothen_signal_graph(SCREEN_PLOT.samples);
     sc.send_wave_plot(SCREEN_PLOT.samples, SCREEN_PLOT.sample_count);
 }
 
 static void clear() {
     float tmp[sig::PLOT_SIZE] = {};
-    sc.send_text("Ready");
+    sc.send_text("");
     sc.send_wave_plot(tmp, sig::PLOT_SIZE);
     sc.send_spectrum_plot(tmp, sig::PLOT_SIZE);
 }
@@ -332,21 +305,28 @@ static void dispatch_work_mode(WorkMode request) {
     }
 
     clear();
+    sc.send_text("Computing...");
 
     // 除校准外，每个任务只采集、分析一次，再按模式选择输出。
     const SignalDescription signal = perform_acquisition();
     switch (request) {
         case WorkMode::ShowOneCycle:
             handle_show_cycles(signal, true);
+            sleep_ms(100);
+            sc.send_text("Finished.");
             break;
         case WorkMode::ShowThreeCycle:
             handle_show_cycles(signal, false);
+            sleep_ms(100);
+            sc.send_text("Finished.");
             break;
         case WorkMode::ShowBriefDescription:
             send_brief_description(signal);
             break;
         case WorkMode::ShowSpectrumPlot:
             send_spectrum_plot(SCREEN_PLOT);
+            sleep_ms(100);
+            sc.send_text("Finished.");
             break;
         case WorkMode::ShowSpectrumPeak:
             send_spectrum_peaks(signal);
@@ -373,8 +353,8 @@ int main() {
     sc.send_text(greet);
 
     clear();
+    sc.send_text("Initialized. Not calibrated yet.");
 
-    //初始化PIO&DMA
     if (pio_set_gpio_base(adc_pio, adc::PIO_GPIO_BASE) != PICO_OK) {
         panic("cannot select ADC PIO GPIO window");
     }
@@ -397,13 +377,10 @@ int main() {
 }
 
 static SignalDescription perform_acquisition() {
-    // 清空累积频谱
     reset_signal_analysis();
 
-    float v_pp_measurements[REPEAT_TIME] = {};
-    float v_rms_measurements[REPEAT_TIME] = {};
+    SignalDescription result = {};
     for (uint32_t repeat = 0; repeat < REPEAT_TIME; ++repeat) {
-        // ----- 启动 DMA 采样 -----
         pio_sm_clear_fifos(adc_pio, adc_sm);
         dma_channel_set_write_addr(dma_chan, RAW_BUFFER, false);
         dma_channel_set_trans_count(dma_chan, ARENA_SAMPLE_COUNT, false);
@@ -412,33 +389,17 @@ static SignalDescription perform_acquisition() {
         dma_channel_wait_for_finish_blocking(dma_chan);
         pio_sm_set_enabled(adc_pio, adc_sm, false);
 
-        // ----- 数据解包与信号分析 -----
-        // 前 256 点覆盖 ADC 流水线及停钟后的稳定时间，只处理后续
-        // 65536 个连续采样点。
         unpack_adc_buffer(ADC_BUFFER);
-        const SignalDescription current = analyze_signal(ADC_BUFFER); // 内部填充 MEDIAN_BUFFER 并累加 SPECTRUM_SUM
-
-        // FIXME: 似乎每 9-10 次稳定出现一个离群值？
-        // 而且大部分采样点似乎稳定地高于实际 Vpp 约 10mV（离群值约 20mV）
-        insert_sorted_measurement(
-            v_pp_measurements,
-            repeat,
-            current.v_pp
-        );
-        insert_sorted_measurement(
-            v_rms_measurements,
-            repeat,
-            current.v_rms
-        );
+        const SignalDescription current = analyze_signal(ADC_BUFFER);
+        result.v_pp += current.v_pp;
+        result.v_rms += current.v_rms;
     }
 
-    // ----- 累积频谱分析 -----
     constexpr float repeat_scale =
         1.0f / static_cast<float>(REPEAT_TIME);
 
-    SignalDescription result = {};
-    result.v_pp = v_pp_measurements[REPEAT_TIME / 2];
-    result.v_rms = v_rms_measurements[REPEAT_TIME / 2];
+    result.v_pp *= repeat_scale;
+    result.v_rms *= repeat_scale;
 
     analyze_accumulated_spectrum(repeat_scale, result);
     return result;
