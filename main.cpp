@@ -200,7 +200,7 @@ static void send_brief_description(const SignalDescription &signal) {
     constexpr float repeat_scale = 1.0f;
 
     pos += snprintf(buffer + pos, sizeof(buffer) - pos, "Vpp= %.2f mV\r\nVrms= %.2f mv\r\n",
-                    signal.v_pp * repeat_scale * 0.985,signal.v_rms); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
+                    signal.v_pp * repeat_scale, signal.v_rms); // TODO: snprintf 是什么东西？这里暂时不要动，可能是原作保留的某个函数。**不要删除或修改**
 
     if (signal.component_count == 0) {
         snprintf(

@@ -67,7 +67,7 @@ static float spectrum_magnitude_mv(
         (bin == 0 || bin == FFT_SIZE / 2) ? 1.0f : 2.0f;
     return sqrtf(real * real + imag * imag) *
            one_sided_scale /
-           (static_cast<float>(FFT_SIZE) * coherent_gain);
+           (static_cast<float>(FFT_SIZE) * coherent_gain) * 0.987;
 }
 
 static float accumulated_spectrum_power(
@@ -462,7 +462,6 @@ void analyze_signal(uint16_t *buffer) {
             coherent_gain
         );
     }
-
 }
 
 static void clear_plot(SignalPlot &plot, uint16_t sample_count) {
