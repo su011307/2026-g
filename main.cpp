@@ -38,8 +38,11 @@ constexpr size_t ARENA_SAMPLE_COUNT = sizeof(RAW_BUFFER) / sizeof(RAW_BUFFER[0])
 static uint16_t *const ADC_BUFFER =
     RAW_BUFFER + adc::STARTUP_DISCARD_SAMPLES;
 
-enum class WorkMode : uint8_t {
+enum class Command : uint8_t {
     Calibrate, /* 校准逻辑 */
+    EndCalibrate,
+    AddCompensate,
+    SubCompensate,
     ShowOneCycle, /* 显示一个周期的波形 */
     ShowThreeCycle, /* 显示三个周期的波形 */
     ShowBriefDescription, /* 显示 Vpp、Vrms、基频 */
@@ -51,16 +54,17 @@ static Screen sc;
 constexpr uint8_t WORK_QUEUE_SIZE = 16;
 constexpr uint8_t WORK_QUEUE_MASK = WORK_QUEUE_SIZE - 1;
 constexpr uint8_t WORK_MODE_COUNT =
-    static_cast<uint8_t>(WorkMode::ShowSpectrumPeak) + 1;
+    static_cast<uint8_t>(Command::ShowSpectrumPeak) + 1;
 static_assert((WORK_QUEUE_SIZE & WORK_QUEUE_MASK) == 0);
-static_assert(WORK_MODE_COUNT == 6);
+static_assert(WORK_MODE_COUNT == 9);
 
-static volatile WorkMode WORK_QUEUE[WORK_QUEUE_SIZE] = {};
+static volatile Command WORK_QUEUE[WORK_QUEUE_SIZE] = {};
 static volatile uint8_t WORK_QUEUE_HEAD = 0;
 static volatile uint8_t WORK_QUEUE_TAIL = 0;
 static SignalPlot SCREEN_PLOT = {};
 
 static volatile bool in_calibration = false;
+static float ADC_COMPENSATE = 0.987;
 
 static uint dma_chan;
 static uint adc_offset;
@@ -103,7 +107,7 @@ void init_peripheral(
 void __isr __not_in_flash_func(screen_irq_handler)() {
     static uint8_t receive_state = 0;
     static uint8_t command = 0;
-    static WorkMode selected_mode = WorkMode::ShowOneCycle;
+    static Command cmd;
 
     while (uart_is_readable(screen_uart)) {
         const uint8_t byte = static_cast<uint8_t>(
@@ -112,14 +116,15 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
         switch (receive_state) {
             case 0:
                 if (
-                    byte == 0x2b ||
-                    byte == 0x2d ||
+                    byte == 0x40 ||
+                    byte == 0x41 ||
                     byte == 0x31 ||
                     byte == 0x33 ||
                     byte == 0x34 ||
                     byte == 0x35 ||
                     byte == 0x36 ||
-                    byte == 0x37
+                    byte == 0x37 ||
+                    byte == 0x38
                 ) {
                     command = byte;
                     receive_state = 1;
@@ -138,39 +143,32 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                 }
 
                 switch (command) {
-                    case 0x2b:
-                        selected_mode = static_cast<WorkMode>(
-                            (
-                                static_cast<uint8_t>(selected_mode) +
-                                1
-                            ) % WORK_MODE_COUNT
-                        );
+                    case 0x40:
+                        cmd = Command::AddCompensate;
                         break;
-                    case 0x2d:
-                        selected_mode = static_cast<WorkMode>(
-                            (
-                                static_cast<uint8_t>(selected_mode) +
-                                WORK_MODE_COUNT - 1
-                            ) % WORK_MODE_COUNT
-                        );
+                    case 0x41:
+                        cmd = Command::SubCompensate;
                         break;
                     case 0x31:
-                        selected_mode = WorkMode::ShowOneCycle;
+                        cmd = Command::ShowOneCycle;
                         break;
                     case 0x33:
-                        selected_mode = WorkMode::ShowThreeCycle;
+                        cmd = Command::ShowThreeCycle;
                         break;
                     case 0x34:
-                        selected_mode = WorkMode::ShowBriefDescription;
+                        cmd = Command::ShowBriefDescription;
                         break;
                     case 0x35:
-                        selected_mode = WorkMode::ShowSpectrumPlot;
+                        cmd = Command::ShowSpectrumPlot;
                         break;
                     case 0x36:
-                        selected_mode = WorkMode::ShowSpectrumPeak;
+                        cmd = Command::ShowSpectrumPeak;
                         break;
                     case 0x37:
-                        selected_mode = WorkMode::Calibrate;
+                        cmd = Command::Calibrate;
+                        break;
+                    case 0x38:
+                        cmd = Command::EndCalibrate;
                         break;
                     default:
                         break;
@@ -180,7 +178,7 @@ void __isr __not_in_flash_func(screen_irq_handler)() {
                 const uint8_t next_head =
                     (head + 1) & WORK_QUEUE_MASK;
                 if (next_head != WORK_QUEUE_TAIL) {
-                    WORK_QUEUE[head] = selected_mode;
+                    WORK_QUEUE[head] = cmd;
                     WORK_QUEUE_HEAD = next_head;
                 }
                 break;
@@ -279,61 +277,67 @@ static void clear() {
     sc.send_spectrum_plot(tmp, sig::PLOT_SIZE);
 }
 
-static void handle_calibration() {
-    // 从 ADC 读取若干个采样（如 15 个），然后计算出平均 Vpp 和目标 Vpp 的偏差，然后计算出输出 Vpp 时的校准量
-    // 后续校准应作用于 FIR 增益补偿后的有效谱峰幅值。
-}
-
-static void dispatch_work_mode(WorkMode request) {
-    if (request == WorkMode::Calibrate) {
-        if (in_calibration) {
-            handle_calibration();
-        } else {
-            sc.send_text(
-                "To calibrate: set sig. to 50mV@500kHz, press button again"
-            );
-        }
-        return;
-    }
-
-    if (in_calibration) {
-        sc.send_text("Calibrating. Please follow the instruction.");
-        return;
-    }
-
+static void dispatch_work_mode(Command request) {
     clear();
     sc.send_text("Computing...");
 
     // 除校准外，每个任务只采集、分析一次，再按模式选择输出。
-    const SignalDescription signal = perform_acquisition();
+    SignalDescription signal = perform_acquisition();
+    for (int i = 0; i < signal.component_count; i++) {
+        signal.component_frequency[i] *= 1.0013568;
+    }
     switch (request) {
-        case WorkMode::ShowOneCycle:
+        case Command::ShowOneCycle:
             handle_show_cycles(signal, true);
             sleep_ms(100);
             sc.send_text("Finished.");
             break;
-        case WorkMode::ShowThreeCycle:
+        case Command::ShowThreeCycle:
             handle_show_cycles(signal, false);
             sleep_ms(100);
             sc.send_text("Finished.");
             break;
-        case WorkMode::ShowBriefDescription:
+        case Command::ShowBriefDescription:
             send_brief_description(signal);
             break;
-        case WorkMode::ShowSpectrumPlot:
+        case Command::ShowSpectrumPlot:
             send_spectrum_plot(SCREEN_PLOT);
             sleep_ms(100);
             sc.send_text("Finished.");
             break;
-        case WorkMode::ShowSpectrumPeak:
+        case Command::ShowSpectrumPeak:
             send_spectrum_peaks(signal);
             break;
-        case WorkMode::Calibrate:
+        case Command::Calibrate:
+            in_calibration = true;
+            sc.send_text("Calibrating...");
+            sleep_ms(100);
+            char tune_text[64];
+            sprintf(tune_text, "AM: %.3f ", ADC_COMPENSATE);
+            sc.send_tune_text(tune_text);
             break;
+        case Command::EndCalibrate:
+            in_calibration = false;
+            break;
+        case Command::AddCompensate:
+            if (!in_calibration) {
+                break;
+            }
+            ADC_COMPENSATE += 0.001;
+            sprintf(tune_text,"AM: %.3f ",ADC_COMPENSATE);
+            sc.send_tune_text(tune_text);
+            break;
+        case Command::SubCompensate:
+            if (!in_calibration) {
+                break;
+            }
+            ADC_COMPENSATE -= 0.001;
+            sprintf(tune_text,"AM: %.3f ",ADC_COMPENSATE);
+            sc.send_tune_text(tune_text);
     }
 }
 
-static bool try_pop_work_mode(WorkMode &mode) {
+static bool try_pop_work_mode(Command &mode) {
     const uint8_t tail = WORK_QUEUE_TAIL;
     if (tail == WORK_QUEUE_HEAD) {
         return false;
@@ -363,7 +367,7 @@ int main() {
     sleep_ms(1);
 
     while (1) {
-        WorkMode request;
+        Command request;
         if (!try_pop_work_mode(request)) {
             tight_loop_contents();
             continue;
@@ -386,7 +390,7 @@ static SignalDescription perform_acquisition() {
         pio_sm_set_enabled(adc_pio, adc_sm, false);
 
         unpack_adc_buffer(ADC_BUFFER);
-        analyze_signal(ADC_BUFFER);
+        analyze_signal(ADC_BUFFER, ADC_COMPENSATE);
     }
 
     constexpr float repeat_scale =

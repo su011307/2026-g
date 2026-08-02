@@ -58,7 +58,8 @@ static void spectrum_components(
 static float spectrum_magnitude_mv(
     const float *fft_output,
     uint32_t bin,
-    float coherent_gain
+    float coherent_gain,
+    float compensate
 ) {
     float real;
     float imag;
@@ -67,7 +68,7 @@ static float spectrum_magnitude_mv(
         (bin == 0 || bin == FFT_SIZE / 2) ? 1.0f : 2.0f;
     return sqrtf(real * real + imag * imag) *
            one_sided_scale /
-           (static_cast<float>(FFT_SIZE) * coherent_gain) * 0.987;
+           (static_cast<float>(FFT_SIZE) * coherent_gain) * compensate;
 }
 
 static float accumulated_spectrum_power(
@@ -382,7 +383,10 @@ void analyze_accumulated_spectrum(
     infer_signal_metrics(result);
 }
 
-void analyze_signal(uint16_t *buffer) {
+void analyze_signal(
+    uint16_t *buffer,
+    const float compensate
+) {
     float voltage_sum = 0.0f;
     for (uint32_t i = 0; i < BUFFER_SIZE; ++i) {
         voltage_sum += compute_adc_voltage(
@@ -459,7 +463,8 @@ void analyze_signal(uint16_t *buffer) {
         SPECTRUM_SUM[bin] += spectrum_magnitude_mv(
             FFT_OUTPUT,
             bin,
-            coherent_gain
+            coherent_gain,
+            compensate
         );
     }
 }

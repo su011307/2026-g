@@ -50,7 +50,9 @@ void Screen::send_spectrum_plot(
 void Screen::send_text(const char *text) {
     printf("slt0.txt=\"%s\"\xff\xff\xff", text);
 }
-
+void Screen::send_tune_text(const char *text) {
+    printf("slt1.txt=\"%s\"\xff\xff\xff", text);
+}
 void Screen::send_graph_with_step(const float data[], uint16_t length, uint16_t step){
     printf("addt s0.id,0,%d\xff\xff\xff", length);
     sleep_ms(100);

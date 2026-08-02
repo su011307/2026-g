@@ -10,6 +10,7 @@ public:
         uint16_t length
     );
     void send_text(const char *text);
+    void send_tune_text(const char *text);
     void send_graph_with_step(const float data[], uint16_t length, uint16_t step);
 
 private:

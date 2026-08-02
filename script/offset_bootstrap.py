@@ -1,8 +1,8 @@
 import numpy as np
 
-EXPECTED_MEAN = 100.0
+EXPECTED_MEAN = 57.25
 BOOTSTRAP_ITERATION = 1_0000
-PATH_TO_DATA = 'vrms.txt'
+PATH_TO_DATA = '/home/shaoyafan/develop/wavegen/res/data/test_3_3.txt'
 
 with open(PATH_TO_DATA) as f:
     line = f.readline()

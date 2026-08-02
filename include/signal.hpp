@@ -17,7 +17,7 @@ struct SignalPlot {
 };
 
 void reset_signal_analysis();
-void analyze_signal(uint16_t *buffer);
+void analyze_signal(uint16_t *buffer, const float compensate);
 void analyze_accumulated_spectrum(
     float spectrum_scale,
     SignalDescription &result
